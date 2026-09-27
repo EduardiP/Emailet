@@ -54,6 +54,7 @@ app.get('/', (req, res) => {
   <div class="row">
     <input type="text" id="query" placeholder="p.sh. Recruiting and ATS software companies" />
     <input type="text" id="kategoria" placeholder="Etiketë kategorie (p.sh. recruiting-ats)" style="max-width:220px;" />
+    <input type="number" id="qeVitiEkziston" placeholder="Që nga viti (p.sh. 2018)" style="max-width:170px;" min="2000" max="2026" />
     <button id="btn" onclick="kerko()">Kërko (të reja)</button>
     <button class="sec" onclick="shikoTeGjitha()">Shiko të ruajturat</button>
   </div>
@@ -69,12 +70,13 @@ app.get('/', (req, res) => {
 async function kerko(){
   const query = document.getElementById('query').value.trim();
   const kategoria = document.getElementById('kategoria').value.trim() || 'pa-etiketë';
+  const qeVitiEkziston = document.getElementById('qeVitiEkziston').value.trim();
   const btn = document.getElementById('btn'), status = document.getElementById('status'), count = document.getElementById('count');
   const rez = document.getElementById('rez'), rezBody = document.getElementById('rezBody');
   if(!query){ status.textContent = 'Shkruaj një query fillimisht.'; return; }
   btn.disabled = true; btn.textContent = 'Duke kërkuar...'; status.textContent = ''; count.textContent = ''; rez.style.display = 'none'; rezBody.innerHTML = '';
   try{
-    const r = await fetch('/api/kerko', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ query, kategoria }) });
+    const r = await fetch('/api/kerko', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ query, kategoria, qeVitiEkziston }) });
     const d = await r.json();
     if(d.error){ status.textContent = 'Gabim: ' + d.error; btn.disabled=false; btn.textContent='Kërko (të reja)'; return; }
     count.textContent = d.reja.length + ' TË REJA u ruajtën (Exa ktheu ' + d.gjithsejKthyerNgaExa + ' gjithsej, ' + d.perjashtuar + ' ishin tashmë të njohura dhe u hodhën poshtë).';
@@ -108,7 +110,7 @@ function esc(s){ return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<'
 
 app.post('/api/kerko', async (req, res) => {
   if (!EXA_KEY) return res.status(500).json({ error: 'EXA_API_KEY s\'është konfiguruar.' });
-  const { query, kategoria } = req.body || {};
+  const { query, kategoria, qeVitiEkziston } = req.body || {};
   if (!query) return res.status(400).json({ error: 'Mungon query.' });
   try {
     // 1. Merr te GJITHA domain-et ekzistuese, per t'i derguar VET Exa-s si perjashtim real
@@ -118,6 +120,9 @@ app.post('/api/kerko', async (req, res) => {
     // 2. Therret Exa
     const body = { query, numResults: 100, contents: { highlights: { numSentences: 2 } } };
     if (excludeDomains.length) body.excludeDomains = excludeDomains.slice(0, 1200);
+    if (qeVitiEkziston && /^\d{4}$/.test(String(qeVitiEkziston))) {
+      body.startPublishedDate = qeVitiEkziston + '-01-01T00:00:00.000Z'; // qe nga fillimi i atij viti deri sot (pa endPublishedDate)
+    }
 
     const r = await fetch('https://api.exa.ai/search', {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + EXA_KEY }, body: JSON.stringify(body)
