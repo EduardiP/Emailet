@@ -24,6 +24,22 @@ function domainNga(url) {
 }
 function esc(s) { return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
+const DOMAIN_ZHURME = [
+  'quora.com', 'prnewswire.com', 'globenewswire.com', 'finance.yahoo.com', 'businesswire.com',
+  'linkedin.com', 'glassdoor.com', 'indeed.com', 'grandresearchstore.com', 'reddit.com',
+  'wikipedia.org', 'youtube.com', 'facebook.com', 'twitter.com', 'x.com', 'crunchbase.com'
+];
+const SHABLLON_ARTIKULL = /\/(blog|news|resources|articles|guides?|insights?)\//i;
+const FJALE_ARTIKULL = /\b(best|top|vs|review|comparison|guide to)\b.{0,30}\b(20\d\d|software|systems?|platforms?|tools?)\b/i;
+
+function eshteZhurme(url, title) {
+  const domain = domainNga(url);
+  if (DOMAIN_ZHURME.some(z => domain === z || domain.endsWith('.' + z))) return true;
+  if (SHABLLON_ARTIKULL.test(url)) return true;
+  if (FJALE_ARTIKULL.test(title || '')) return true;
+  return false;
+}
+
 app.get('/', (req, res) => {
   res.type('html').send(`<!DOCTYPE html>
 <html lang="sq"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -79,7 +95,7 @@ async function kerko(){
     const r = await fetch('/api/kerko', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ query, kategoria, qeVitiEkziston }) });
     const d = await r.json();
     if(d.error){ status.textContent = 'Gabim: ' + d.error; btn.disabled=false; btn.textContent='Kërko (të reja)'; return; }
-    count.textContent = d.reja.length + ' TË REJA u ruajtën (Exa ktheu ' + d.gjithsejKthyerNgaExa + ' gjithsej, ' + d.perjashtuar + ' ishin tashmë të njohura dhe u hodhën poshtë).';
+    count.textContent = d.reja.length + ' TË REJA u ruajtën (Exa ktheu ' + d.gjithsejKthyerNgaExa + ' gjithsej, ' + d.perjashtuar + ' ishin tashmë të njohura, ' + d.zhurmeHequr + ' u hodhën poshtë si zhurmë/blog/lajm).';
     renderRreshta(d.reja);
   }catch(e){ status.textContent = 'Gabim rrjeti: ' + e.message; }
   btn.disabled = false; btn.textContent = 'Kërko (të reja)';
@@ -133,7 +149,9 @@ app.post('/api/kerko', async (req, res) => {
 
     // 3. Ruaj ne databazë (ON CONFLICT mbron nga cdo dublikatë qe mund te kaloje gjithsesi)
     const reja = [];
+    let zhurmeHequr = 0;
     for (const x of gjetur) {
+      if (eshteZhurme(x.url, x.title)) { zhurmeHequr++; continue; }
       const domain = domainNga(x.url);
       const emri = x.title || domain;
       const pershkrimi = (x.highlights && x.highlights[0]) ? x.highlights[0].slice(0, 300) : '';
@@ -143,7 +161,7 @@ app.post('/api/kerko', async (req, res) => {
       );
       if (ins.rows.length) reja.push(ins.rows[0]);
     }
-    res.json({ reja, perjashtuar: excludeDomains.length, gjithsejKthyerNgaExa: gjetur.length });
+    res.json({ reja, perjashtuar: excludeDomains.length, gjithsejKthyerNgaExa: gjetur.length, zhurmeHequr });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
