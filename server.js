@@ -62,7 +62,7 @@ app.get('/', (req, res) => {
   <div id="status"></div>
   <div id="count"></div>
   <table id="rez" style="display:none;">
-    <thead><tr><th>Emri</th><th>Domain</th><th>Përshkrim</th><th>Kategori</th></tr></thead>
+    <thead><tr><th>#</th><th>Emri</th><th>Domain</th><th>Përshkrim</th><th>Kategori</th></tr></thead>
     <tbody id="rezBody"></tbody>
   </table>
 </div>
@@ -100,7 +100,7 @@ function renderRreshta(rows){
   const rez = document.getElementById('rez'), rezBody = document.getElementById('rezBody');
   if(rows.length){
     rez.style.display = 'table';
-    rezBody.innerHTML = rows.map(x => '<tr><td>'+esc(x.emri||'')+'</td><td><a href="'+esc(x.url)+'" target="_blank">'+esc(x.domain)+'</a></td><td>'+esc(x.pershkrimi||'')+'</td><td><span class="badge">'+esc(x.kategoria||'')+'</span></td></tr>').join('');
+    rezBody.innerHTML = rows.map((x,i) => '<tr><td>'+(i+1)+'</td><td>'+esc(x.emri||'')+'</td><td><a href="'+esc(x.url)+'" target="_blank">'+esc(x.domain)+'</a></td><td>'+esc(x.pershkrimi||'')+'</td><td><span class="badge">'+esc(x.kategoria||'')+'</span></td></tr>').join('');
   }
 }
 function esc(s){ return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
