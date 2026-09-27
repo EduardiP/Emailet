@@ -20,14 +20,22 @@ pool.query(`CREATE TABLE IF NOT EXISTS bizneset_gjetur (
 )`).catch(e => console.error('migrim:', e.message));
 
 function domainNga(url) {
-  try { return new URL(url).hostname.replace(/^www\./, ''); } catch (e) { return url; }
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, '');
+    const pjeset = host.split('.');
+    // Merr vetem 2 pjeset e fundit (p.sh. "preview.eightfold.ai" -> "eightfold.ai")
+    return pjeset.length > 2 ? pjeset.slice(-2).join('.') : host;
+  } catch (e) { return url; }
 }
 function esc(s) { return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 const DOMAIN_ZHURME = [
   'quora.com', 'prnewswire.com', 'globenewswire.com', 'finance.yahoo.com', 'businesswire.com',
   'linkedin.com', 'glassdoor.com', 'indeed.com', 'grandresearchstore.com', 'reddit.com',
-  'wikipedia.org', 'youtube.com', 'facebook.com', 'twitter.com', 'x.com', 'crunchbase.com'
+  'wikipedia.org', 'youtube.com', 'facebook.com', 'twitter.com', 'x.com', 'crunchbase.com',
+  'techcrunch.com', 'wearetech.africa', 'techsoma.africa', 'techbuild.africa', 'forbes.com',
+  'bloomberg.com', 'reuters.com', 'gartner.com', 'g2.com', 'capterra.com', 'getapp.com',
+  'softwareadvice.com', 'trustpilot.com', 'medium.com'
 ];
 const SHABLLON_ARTIKULL = /\/(blog|news|resources|articles|guides?|insights?)\//i;
 const FJALE_ARTIKULL = /\b(best|top|vs|review|comparison|guide to)\b.{0,30}\b(20\d\d|software|systems?|platforms?|tools?)\b/i;
@@ -38,6 +46,28 @@ function eshteZhurme(url, title) {
   if (SHABLLON_ARTIKULL.test(url)) return true;
   if (FJALE_ARTIKULL.test(title || '')) return true;
   return false;
+}
+
+const OPENAI_KEY = process.env.OPENAI_API_KEY;
+
+async function filtroMeAI(rezultate) {
+  if (!OPENAI_KEY || !rezultate.length) return rezultate.map(() => true); // nese s'ka celes, kalo te gjitha (fallback)
+  const lista = rezultate.map((x, i) => (i+1) + '. Titulli: "' + (x.title||'') + '" | Fragment: "' + ((x.highlights&&x.highlights[0])||'').slice(0,200) + '"').join('\n');
+  const prompt = 'Për secilën nga hyrjet e mëposhtme, thuaj nëse ËSHTË vetë faqja kryesore/produkti i një kompanie/platforme reale (PO), OSE nëse është artikull lajmesh, blog, faqe krahasimi/review, forum, listim pune, ose profil individual (JO).\n\n' + lista + '\n\nPërgjigju VETËM me një array JSON të fjalëve "po" ose "jo", në të njëjtën radhë, asgjë tjetër. Shembull: ["po","jo","po"]';
+  try {
+    const r = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + OPENAI_KEY },
+      body: JSON.stringify({ model: 'gpt-5-nano', messages: [{ role: 'user', content: prompt }] })
+    });
+    const data = await r.json();
+    const tekst = data.choices[0].message.content.trim();
+    const arr = JSON.parse(tekst.match(/\[.*\]/s)[0]);
+    return rezultate.map((_, i) => (arr[i] || '').toLowerCase().startsWith('po'));
+  } catch (e) {
+    console.error('Gabim filtroMeAI:', e.message);
+    return rezultate.map(() => true); // nese AI dështon, kalo te gjitha (mos e ndalo procesin)
+  }
 }
 
 app.get('/', (req, res) => {
@@ -78,7 +108,7 @@ app.get('/', (req, res) => {
   <div id="status"></div>
   <div id="count"></div>
   <table id="rez" style="display:none;">
-    <thead><tr><th>#</th><th>Emri</th><th>Domain</th><th>Përshkrim</th><th>Kategori</th></tr></thead>
+    <thead><tr><th>#</th><th>Emri</th><th>Domain</th><th>Përshkrim</th><th>Kategori</th><th>Status</th></tr></thead>
     <tbody id="rezBody"></tbody>
   </table>
 </div>
@@ -95,8 +125,8 @@ async function kerko(){
     const r = await fetch('/api/kerko', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ query, kategoria, qeVitiEkziston }) });
     const d = await r.json();
     if(d.error){ status.textContent = 'Gabim: ' + d.error; btn.disabled=false; btn.textContent='Kërko (të reja)'; return; }
-    count.textContent = d.reja.length + ' TË REJA u ruajtën (Exa ktheu ' + d.gjithsejKthyerNgaExa + ' gjithsej, ' + d.perjashtuar + ' ishin tashmë të njohura, ' + d.zhurmeHequr + ' u hodhën poshtë si zhurmë/blog/lajm).';
-    renderRreshta(d.reja);
+    count.textContent = d.reja.length + ' TË REJA u ruajtën (Exa ktheu ' + d.gjithsejKthyerNgaExa + ' gjithsej, ' + d.perjashtuar + ' ishin tashmë të njohura, ' + d.zhurmeHequr + ' u përjashtuan nga filtri/AI — shënuar poshtë me pikë të kuqe).';
+    renderRreshtaMeStatus(d.teGjitha);
   }catch(e){ status.textContent = 'Gabim rrjeti: ' + e.message; }
   btn.disabled = false; btn.textContent = 'Kërko (të reja)';
 }
@@ -116,7 +146,14 @@ function renderRreshta(rows){
   const rez = document.getElementById('rez'), rezBody = document.getElementById('rezBody');
   if(rows.length){
     rez.style.display = 'table';
-    rezBody.innerHTML = rows.map((x,i) => '<tr><td>'+(i+1)+'</td><td>'+esc(x.emri||'')+'</td><td><a href="'+esc(x.url)+'" target="_blank">'+esc(x.domain)+'</a></td><td>'+esc(x.pershkrimi||'')+'</td><td><span class="badge">'+esc(x.kategoria||'')+'</span></td></tr>').join('');
+    rezBody.innerHTML = rows.map((x,i) => '<tr><td>'+(i+1)+'</td><td>'+esc(x.emri||'')+'</td><td><a href="'+esc(x.url)+'" target="_blank">'+esc(x.domain)+'</a></td><td>'+esc(x.pershkrimi||'')+'</td><td><span class="badge">'+esc(x.kategoria||'')+'</span></td><td>🟢</td></tr>').join('');
+  }
+}
+function renderRreshtaMeStatus(rows){
+  const rez = document.getElementById('rez'), rezBody = document.getElementById('rezBody');
+  if(rows.length){
+    rez.style.display = 'table';
+    rezBody.innerHTML = rows.map((x,i) => '<tr><td>'+(i+1)+'</td><td>'+esc(x.emri||'')+'</td><td><a href="'+esc(x.url)+'" target="_blank">'+esc(x.domain)+'</a></td><td>'+esc(x.pershkrimi||'')+'</td><td><span class="badge">'+esc(x.kategoria||'')+'</span></td><td>'+(x.pranuar?'🟢':'🔴')+'</td></tr>').join('');
   }
 }
 function esc(s){ return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -147,21 +184,30 @@ app.post('/api/kerko', async (req, res) => {
     const data = await r.json();
     const gjetur = data.results || [];
 
-    // 3. Ruaj ne databazë (ON CONFLICT mbron nga cdo dublikatë qe mund te kaloje gjithsesi)
-    const reja = [];
-    let zhurmeHequr = 0;
+    // 3. Filtro me AI (gpt-5-nano) ato qe kaluan filtrin fiks — 1 thirrje e vetme, per te gjitha bashke
+    const kaluaFiltrinFiks = gjetur.filter(x => !eshteZhurme(x.url, x.title));
+    const vendimeAI = await filtroMeAI(kaluaFiltrinFiks);
+    const vendimAIPerDomain = {}; // domain -> pranuar (true/false), per t'i lidhur poshte
+    kaluaFiltrinFiks.forEach((x, i) => { vendimAIPerDomain[domainNga(x.url)] = vendimeAI[i]; });
+
+    // 4. Ruaj ne databazë VETEM ato te pranuara (ON CONFLICT mbron nga cdo dublikatë)
+    const teGjitha = []; // per UI: te GJITHA, secili me "pranuar" true/false
     for (const x of gjetur) {
-      if (eshteZhurme(x.url, x.title)) { zhurmeHequr++; continue; }
       const domain = domainNga(x.url);
       const emri = x.title || domain;
       const pershkrimi = (x.highlights && x.highlights[0]) ? x.highlights[0].slice(0, 300) : '';
-      const ins = await pool.query(
-        'INSERT INTO bizneset_gjetur (domain, emri, url, pershkrimi, kategoria) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (domain) DO NOTHING RETURNING *',
-        [domain, emri, x.url, pershkrimi, kategoria]
-      );
-      if (ins.rows.length) reja.push(ins.rows[0]);
+      const eshteZhurmeFikse = eshteZhurme(x.url, x.title);
+      const pranuar = !eshteZhurmeFikse && (vendimAIPerDomain[domain] !== false);
+      if (pranuar) {
+        await pool.query(
+          'INSERT INTO bizneset_gjetur (domain, emri, url, pershkrimi, kategoria) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (domain) DO NOTHING',
+          [domain, emri, x.url, pershkrimi, kategoria]
+        );
+      }
+      teGjitha.push({ domain, emri, url: x.url, pershkrimi, kategoria, pranuar });
     }
-    res.json({ reja, perjashtuar: excludeDomains.length, gjithsejKthyerNgaExa: gjetur.length, zhurmeHequr });
+    const reja = teGjitha.filter(x => x.pranuar);
+    res.json({ reja, teGjitha, perjashtuar: excludeDomains.length, gjithsejKthyerNgaExa: gjetur.length, zhurmeHequr: teGjitha.length - reja.length });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
