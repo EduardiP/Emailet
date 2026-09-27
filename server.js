@@ -80,7 +80,7 @@ async function filtroMeAI(rezultate) {
 //  3. email/find/               (lead_id -> email)
 async function gjejEmailPerDomain(domain) {
   if (!GENERECT_KEY) return null;
-  const headers = { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + GENERECT_KEY };
+  const headers = { 'Content-Type': 'application/json', 'Authorization': 'Token ' + GENERECT_KEY };
   const baza = 'https://api.generect.com/api/v1';
   try {
     const rComp = await fetch(baza + '/enrich/database/company/', {
@@ -290,7 +290,7 @@ app.get('/api/test-email', async (req, res) => {
   const domain = req.query.domain;
   if (!domain) return res.status(400).json({ error: 'Shto ?domain=example.com ne URL.' });
   if (!GENERECT_KEY) return res.status(500).json({ error: 'GENERECT_API_KEY nuk eshte konfiguruar.' });
-  const headers = { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + GENERECT_KEY };
+  const headers = { 'Content-Type': 'application/json', 'Authorization': 'Token ' + GENERECT_KEY };
   const baza = 'https://api.generect.com/api/v1';
   const rezultat = { domain };
   try {
