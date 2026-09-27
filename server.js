@@ -273,6 +273,24 @@ app.post('/api/kerko', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.get('/api/test-email', async (req, res) => {
+  const domain = req.query.domain;
+  if (!domain) return res.status(400).json({ error: 'Shto ?domain=example.com ne URL.' });
+  if (!GENERECT_KEY) return res.status(500).json({ error: 'GENERECT_API_KEY nuk eshte konfiguruar.' });
+  const rezultat = { domain, celesiEkziston: !!GENERECT_KEY, celesiFillimi: GENERECT_KEY.slice(0, 8) + '...' };
+  try {
+    const rSearch = await fetch('https://api.generect.com/search/database/leads/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + GENERECT_KEY },
+      body: JSON.stringify({ job_titles: ['CEO', 'Founder', 'Owner', 'Co-Founder'], company_domains: [domain], per_page: 3 })
+    });
+    rezultat.hapi1_status = rSearch.status;
+    rezultat.hapi1_statusText = rSearch.statusText;
+    rezultat.hapi1_body = await rSearch.text();
+  } catch (e) { rezultat.hapi1_gabim = e.message; }
+  res.json(rezultat);
+});
+
 app.get('/api/kategorite', async (req, res) => {
   try {
     const r = await pool.query('SELECT DISTINCT kategoria FROM bizneset_gjetur WHERE kategoria IS NOT NULL ORDER BY kategoria ASC');
