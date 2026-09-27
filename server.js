@@ -157,7 +157,7 @@ async function gjejEmailet(){
     const r = await fetch('/api/gjej-emailet', { method: 'POST' });
     const d = await r.json();
     if(d.error){ status.textContent = 'Gabim: ' + d.error; return; }
-    status.textContent = 'U përpunuan ' + d.perpunuar + ' — ' + d.gjetur + ' email-e u gjetën, ' + d.deshtuar + ' s\'u gjetën. Kliko "Shiko të ruajturat" për t\'i parë.';
+    status.textContent = 'U perpunuan ' + d.perpunuar + ' - ' + d.gjetur + ' email-e u gjeten, ' + d.deshtuar + ' mungojne. Kliko butonin Shiko te ruajturat per ti pare.';
     if(d.debugParaFundit) console.log('DEBUG - pergjigja e fundit nga Generect:', d.debugParaFundit);
   }catch(e){ status.textContent = 'Gabim rrjeti: ' + e.message; }
 }
