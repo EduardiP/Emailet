@@ -16,8 +16,10 @@ pool.query(`CREATE TABLE IF NOT EXISTS bizneset_gjetur (
   url TEXT,
   pershkrimi TEXT,
   kategoria TEXT,
+  email TEXT,
   gjetur_at TIMESTAMPTZ DEFAULT now()
 )`).catch(e => console.error('migrim:', e.message));
+pool.query(`ALTER TABLE bizneset_gjetur ADD COLUMN IF NOT EXISTS email TEXT`).catch(e => console.error('migrim email:', e.message));
 
 function domainNga(url) {
   try {
@@ -38,7 +40,7 @@ const DOMAIN_ZHURME = [
   'softwareadvice.com', 'trustpilot.com', 'medium.com'
 ];
 const SHABLLON_ARTIKULL = /\/(blog|news|resources|articles|guides?|insights?)\//i;
-const FJALE_ARTIKULL = /\b(best|top|vs|review|comparison|guide to)\b.{0,30}\b(20\d\d|software|systems?|platforms?|tools?)\b/i;
+const FJALE_ARTIKULL = /\b(best|top|vs|review|comparison|guide to)\b.{0,40}\b20\d\d\b/i;
 
 function eshteZhurme(url, title) {
   const domain = domainNga(url);
@@ -108,12 +110,13 @@ app.get('/', (req, res) => {
     <input type="number" id="qeVitiEkziston" placeholder="Që nga viti (p.sh. 2018)" style="max-width:170px;" min="2000" max="2026" />
     <button id="btn" onclick="kerko()">Kërko (të reja)</button>
     <button class="sec" onclick="shikoTeGjitha()">Shiko të ruajturat</button>
+    <button class="sec" onclick="gjejEmailet()">Gjej email-et (Generect)</button>
   </div>
 
   <div id="status"></div>
   <div id="count"></div>
   <table id="rez" style="display:none;">
-    <thead><tr><th>#</th><th>Emri</th><th>Domain</th><th>Përshkrim</th><th>Kategori</th><th>Status</th></tr></thead>
+    <thead><tr><th>#</th><th>Emri</th><th>Domain</th><th>Përshkrim</th><th>Kategori</th><th>Status</th><th>Email</th></tr></thead>
     <tbody id="rezBody"></tbody>
   </table>
 </div>
@@ -147,18 +150,28 @@ async function shikoTeGjitha(){
     renderRreshta(d.rows);
   }catch(e){ status.textContent = 'Gabim: ' + e.message; }
 }
+async function gjejEmailet(){
+  const status = document.getElementById('status');
+  status.textContent = 'Duke kërkuar email-e (deri 50 njëherë)...';
+  try{
+    const r = await fetch('/api/gjej-emailet', { method: 'POST' });
+    const d = await r.json();
+    if(d.error){ status.textContent = 'Gabim: ' + d.error; return; }
+    status.textContent = 'U përpunuan ' + d.perpunuar + ' — ' + d.gjetur + ' email-e u gjetën, ' + d.deshtuar + ' s\'u gjetën. Kliko "Shiko të ruajturat" për t\'i parë.';
+  }catch(e){ status.textContent = 'Gabim rrjeti: ' + e.message; }
+}
 function renderRreshta(rows){
   const rez = document.getElementById('rez'), rezBody = document.getElementById('rezBody');
   if(rows.length){
     rez.style.display = 'table';
-    rezBody.innerHTML = rows.map((x,i) => '<tr><td>'+(i+1)+'</td><td>'+esc(x.emri||'')+'</td><td><a href="'+esc(x.url)+'" target="_blank">'+esc(x.domain)+'</a></td><td>'+esc(x.pershkrimi||'')+'</td><td><span class="badge">'+esc(x.kategoria||'')+'</span></td><td>🟢</td></tr>').join('');
+    rezBody.innerHTML = rows.map((x,i) => '<tr><td>'+(i+1)+'</td><td>'+esc(x.emri||'')+'</td><td><a href="'+esc(x.url)+'" target="_blank">'+esc(x.domain)+'</a></td><td>'+esc(x.pershkrimi||'')+'</td><td><span class="badge">'+esc(x.kategoria||'')+'</span></td><td>🟢</td><td>'+esc(x.email||'—')+'</td></tr>').join('');
   }
 }
 function renderRreshtaMeStatus(rows){
   const rez = document.getElementById('rez'), rezBody = document.getElementById('rezBody');
   if(rows.length){
     rez.style.display = 'table';
-    rezBody.innerHTML = rows.map((x,i) => '<tr><td>'+(i+1)+'</td><td>'+esc(x.emri||'')+'</td><td><a href="'+esc(x.url)+'" target="_blank">'+esc(x.domain)+'</a></td><td>'+esc(x.pershkrimi||'')+'</td><td><span class="badge">'+esc(x.kategoria||'')+'</span></td><td>'+(x.pranuar?'🟢':'🔴')+'</td></tr>').join('');
+    rezBody.innerHTML = rows.map((x,i) => '<tr><td>'+(i+1)+'</td><td>'+esc(x.emri||'')+'</td><td><a href="'+esc(x.url)+'" target="_blank">'+esc(x.domain)+'</a></td><td>'+esc(x.pershkrimi||'')+'</td><td><span class="badge">'+esc(x.kategoria||'')+'</span></td><td>'+(x.pranuar?'🟢':'🔴')+'</td><td>—</td></tr>').join('');
   }
 }
 function esc(s){ return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -220,6 +233,33 @@ app.get('/api/te-gjitha', async (req, res) => {
   try {
     const r = await pool.query('SELECT * FROM bizneset_gjetur ORDER BY gjetur_at DESC');
     res.json({ rows: r.rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+const GENERECT_KEY = process.env.GENERECT_API_KEY;
+
+app.post('/api/gjej-emailet', async (req, res) => {
+  if (!GENERECT_KEY) return res.status(500).json({ error: 'GENERECT_API_KEY s\'është konfiguruar.' });
+  try {
+    const pa_email = await pool.query('SELECT id, domain FROM bizneset_gjetur WHERE email IS NULL ORDER BY gjetur_at ASC LIMIT 50');
+    let gjetur = 0, deshtuar = 0;
+    for (const row of pa_email.rows) {
+      try {
+        const r = await fetch('https://api.generect.com/enrich/email?domain=' + encodeURIComponent(row.domain), {
+          headers: { 'Authorization': 'Bearer ' + GENERECT_KEY }
+        });
+        const d = await r.json();
+        const email = d.email || (d.data && d.data.email) || null;
+        if (email) {
+          await pool.query('UPDATE bizneset_gjetur SET email=$1 WHERE id=$2', [email, row.id]);
+          gjetur++;
+        } else {
+          await pool.query('UPDATE bizneset_gjetur SET email=$1 WHERE id=$2', ['(s\'u gjet)', row.id]);
+          deshtuar++;
+        }
+      } catch (e) { deshtuar++; }
+    }
+    res.json({ perpunuar: pa_email.rows.length, gjetur, deshtuar });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
