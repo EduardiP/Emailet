@@ -77,7 +77,7 @@ async function kerko(){
     const r = await fetch('/api/kerko', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ query, kategoria }) });
     const d = await r.json();
     if(d.error){ status.textContent = 'Gabim: ' + d.error; btn.disabled=false; btn.textContent='Kërko (të reja)'; return; }
-    count.textContent = d.reja.length + ' TË REJA gjetur dhe ruajtur (' + d.perjashtuar + ' domain-e ekzistuese u përjashtuan automatikisht nga kërkimi).';
+    count.textContent = d.reja.length + ' TË REJA u ruajtën (Exa ktheu ' + d.gjithsejKthyerNgaExa + ' gjithsej, ' + d.perjashtuar + ' ishin tashmë të njohura dhe u hodhën poshtë).';
     renderRreshta(d.reja);
   }catch(e){ status.textContent = 'Gabim rrjeti: ' + e.message; }
   btn.disabled = false; btn.textContent = 'Kërko (të reja)';
@@ -111,13 +111,13 @@ app.post('/api/kerko', async (req, res) => {
   const { query, kategoria } = req.body || {};
   if (!query) return res.status(400).json({ error: 'Mungon query.' });
   try {
-    // 1. Merr te GJITHA domain-et ekzistuese, per t'i perjashtuar automatikisht
+    // 1. Merr te GJITHA domain-et ekzistuese, per t'i derguar VET Exa-s si perjashtim real
     const ekzistuese = await pool.query('SELECT domain FROM bizneset_gjetur');
     const excludeDomains = ekzistuese.rows.map(r => r.domain);
 
     // 2. Therret Exa
-    const body = { query, numResults: 100, category: 'company', contents: { highlights: { numSentences: 2 } } };
-    if (excludeDomains.length) body.excludeDomains = excludeDomains.slice(0, 1000); // Exa ka kufi te vet per numrin e domain-eve ne filtër
+    const body = { query, numResults: 100, contents: { highlights: { numSentences: 2 } } };
+    if (excludeDomains.length) body.excludeDomains = excludeDomains.slice(0, 1200);
 
     const r = await fetch('https://api.exa.ai/search', {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + EXA_KEY }, body: JSON.stringify(body)
@@ -126,7 +126,7 @@ app.post('/api/kerko', async (req, res) => {
     const data = await r.json();
     const gjetur = data.results || [];
 
-    // 3. Ruaj ne databazë, duke shpërfillur automatikisht dublikatet (ON CONFLICT)
+    // 3. Ruaj ne databazë (ON CONFLICT mbron nga cdo dublikatë qe mund te kaloje gjithsesi)
     const reja = [];
     for (const x of gjetur) {
       const domain = domainNga(x.url);
@@ -138,7 +138,7 @@ app.post('/api/kerko', async (req, res) => {
       );
       if (ins.rows.length) reja.push(ins.rows[0]);
     }
-    res.json({ reja, perjashtuar: excludeDomains.length });
+    res.json({ reja, perjashtuar: excludeDomains.length, gjithsejKthyerNgaExa: gjetur.length });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
