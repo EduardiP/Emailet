@@ -158,6 +158,7 @@ async function gjejEmailet(){
     const d = await r.json();
     if(d.error){ status.textContent = 'Gabim: ' + d.error; return; }
     status.textContent = 'U përpunuan ' + d.perpunuar + ' — ' + d.gjetur + ' email-e u gjetën, ' + d.deshtuar + ' s\'u gjetën. Kliko "Shiko të ruajturat" për t\'i parë.';
+    if(d.debugParaFundit) console.log('DEBUG - pergjigja e fundit nga Generect:', d.debugParaFundit);
   }catch(e){ status.textContent = 'Gabim rrjeti: ' + e.message; }
 }
 function renderRreshta(rows){
@@ -242,14 +243,29 @@ app.post('/api/gjej-emailet', async (req, res) => {
   if (!GENERECT_KEY) return res.status(500).json({ error: 'GENERECT_API_KEY s\'është konfiguruar.' });
   try {
     const pa_email = await pool.query('SELECT id, domain FROM bizneset_gjetur WHERE email IS NULL ORDER BY gjetur_at ASC LIMIT 50');
-    let gjetur = 0, deshtuar = 0;
+    let gjetur = 0, deshtuar = 0, debugParaFundit = null;
     for (const row of pa_email.rows) {
       try {
-        const r = await fetch('https://api.generect.com/enrich/email?domain=' + encodeURIComponent(row.domain), {
-          headers: { 'Authorization': 'Bearer ' + GENERECT_KEY }
+        // Hapi 1: kerko person vendimmarres (CEO/Founder/Owner) ne kete domain specifik
+        const rSearch = await fetch('https://api.generect.com/search/database/leads/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + GENERECT_KEY },
+          body: JSON.stringify({ job_titles: ['CEO', 'Founder', 'Owner', 'Co-Founder'], company_domains: [row.domain], per_page: 3 })
         });
-        const d = await r.json();
-        const email = d.email || (d.data && d.data.email) || null;
+        const dSearch = await rSearch.json();
+        debugParaFundit = { status: rSearch.status, body: dSearch }; // per diagnostikim, nese duhet
+        const leads = dSearch.data || dSearch.results || dSearch.leads || [];
+        let email = null;
+        if (leads.length && leads[0].id) {
+          // Hapi 2: merr email-in per kete person specifik
+          const rEmail = await fetch('https://api.generect.com/enrich/email/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + GENERECT_KEY },
+            body: JSON.stringify({ lead_id: leads[0].id })
+          });
+          const dEmail = await rEmail.json();
+          email = dEmail.email || (dEmail.data && dEmail.data.email) || null;
+        }
         if (email) {
           await pool.query('UPDATE bizneset_gjetur SET email=$1 WHERE id=$2', [email, row.id]);
           gjetur++;
@@ -259,7 +275,7 @@ app.post('/api/gjej-emailet', async (req, res) => {
         }
       } catch (e) { deshtuar++; }
     }
-    res.json({ perpunuar: pa_email.rows.length, gjetur, deshtuar });
+    res.json({ perpunuar: pa_email.rows.length, gjetur, deshtuar, debugParaFundit });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
