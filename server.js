@@ -53,7 +53,7 @@ const OPENAI_KEY = process.env.OPENAI_API_KEY;
 async function filtroMeAI(rezultate) {
   if (!OPENAI_KEY || !rezultate.length) return rezultate.map(() => true); // nese s'ka celes, kalo te gjitha (fallback)
   const lista = rezultate.map((x, i) => (i+1) + '. Titulli: "' + (x.title||'') + '" | Fragment: "' + ((x.highlights&&x.highlights[0])||'').slice(0,200) + '"').join('\n');
-  const prompt = 'Për secilën nga hyrjet e mëposhtme, thuaj nëse ËSHTË vetë faqja kryesore/produkti i një kompanie/platforme reale (PO), OSE nëse është artikull lajmesh, blog, faqe krahasimi/review, forum, listim pune, ose profil individual (JO).\n\n' + lista + '\n\nPërgjigju VETËM me një array JSON të fjalëve "po" ose "jo", në të njëjtën radhë, asgjë tjetër. Shembull: ["po","jo","po"]';
+  const prompt = 'Për secilën nga hyrjet e mëposhtme (të numëruara 1 deri ' + rezultate.length + '), thuaj nëse ËSHTË vetë faqja kryesore/produkti i një kompanie/platforme reale (po), OSE nëse është artikull lajmesh, blog, faqe krahasimi/review, forum, listim pune, ose profil individual (jo).\n\n' + lista + '\n\nPërgjigju VETËM me një objekt JSON ku çdo çelës është NUMRI (si tekst) dhe vlera është "po" ose "jo" — përfshi TË GJITHË numrat 1 deri ' + rezultate.length + ', asnjë të mos mungojë. Asgjë tjetër, pa shpjegime. Shembull për 3 hyrje: {"1":"po","2":"jo","3":"po"}';
   try {
     const r = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -62,8 +62,13 @@ async function filtroMeAI(rezultate) {
     });
     const data = await r.json();
     const tekst = data.choices[0].message.content.trim();
-    const arr = JSON.parse(tekst.match(/\[.*\]/s)[0]);
-    return rezultate.map((_, i) => (arr[i] || '').toLowerCase().startsWith('po'));
+    const obj = JSON.parse(tekst.match(/\{.*\}/s)[0]);
+    // Perputh SIPAS numrit eksplicit (jo pozicionit ne array) — mbron nga cdo gabim numerimi i AI-se.
+    // Nese ndonje numer mungon nga pergjigja e AI-se, e trajtojme si "po" (fallback i sigurt, mos hidh poshte pa arsye).
+    return rezultate.map((_, i) => {
+      const vlera = obj[String(i + 1)];
+      return vlera === undefined ? true : String(vlera).toLowerCase().startsWith('po');
+    });
   } catch (e) {
     console.error('Gabim filtroMeAI:', e.message);
     return rezultate.map(() => true); // nese AI dështon, kalo te gjitha (mos e ndalo procesin)
