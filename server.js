@@ -74,24 +74,37 @@ async function filtroMeAI(rezultate) {
 }
 
 // Kerkon person vendimmarres (CEO/Founder/Owner) ne kete domain, pastaj email-in e tij. Kthen null nese s'gjendet.
+// Rrjedha (konfirmuar nga kodi burimor zyrtar i Generect):
+//  1. enrich/database/company/  (domain -> linkedin_link)
+//  2. search/database/leads/    (company_link + job_titles -> lead id)
+//  3. email/find/               (lead_id -> email)
 async function gjejEmailPerDomain(domain) {
   if (!GENERECT_KEY) return null;
+  const headers = { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + GENERECT_KEY };
+  const baza = 'https://api.generect.com/api/v1';
   try {
-    const rSearch = await fetch('https://api.generect.com/search/database/leads/', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + GENERECT_KEY },
-      body: JSON.stringify({ job_titles: ['CEO', 'Founder', 'Owner', 'Co-Founder'], company_domains: [domain], per_page: 3 })
+    const rComp = await fetch(baza + '/enrich/database/company/', {
+      method: 'POST', headers, body: JSON.stringify({ domain })
+    });
+    const dComp = await rComp.json();
+    const komp = dComp.data;
+    if (!komp) return null;
+    const companyLink = komp.linkedin_link || komp.linkedin_url;
+    if (!companyLink) return null;
+
+    const rSearch = await fetch(baza + '/search/database/leads/', {
+      method: 'POST', headers,
+      body: JSON.stringify({ job_titles: ['CEO', 'Founder', 'Owner', 'Co-Founder'], company_link: companyLink, limit_by: 3 })
     });
     const dSearch = await rSearch.json();
-    const leads = dSearch.data || dSearch.results || dSearch.leads || [];
+    const leads = (dSearch.data && dSearch.data.leads) || dSearch.data || [];
     if (!leads.length || !leads[0].id) return null;
-    const rEmail = await fetch('https://api.generect.com/enrich/email/', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + GENERECT_KEY },
-      body: JSON.stringify({ lead_id: leads[0].id })
+
+    const rEmail = await fetch(baza + '/email/find/', {
+      method: 'POST', headers, body: JSON.stringify({ lead_id: leads[0].id })
     });
     const dEmail = await rEmail.json();
-    return dEmail.email || (dEmail.data && dEmail.data.email) || null;
+    return (dEmail.data && dEmail.data.email) || null;
   } catch (e) { return null; }
 }
 
@@ -277,17 +290,32 @@ app.get('/api/test-email', async (req, res) => {
   const domain = req.query.domain;
   if (!domain) return res.status(400).json({ error: 'Shto ?domain=example.com ne URL.' });
   if (!GENERECT_KEY) return res.status(500).json({ error: 'GENERECT_API_KEY nuk eshte konfiguruar.' });
-  const rezultat = { domain, celesiEkziston: !!GENERECT_KEY, celesiFillimi: GENERECT_KEY.slice(0, 8) + '...' };
+  const headers = { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + GENERECT_KEY };
+  const baza = 'https://api.generect.com/api/v1';
+  const rezultat = { domain };
   try {
-    const rSearch = await fetch('https://api.generect.com/search/database/leads/', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + GENERECT_KEY },
-      body: JSON.stringify({ job_titles: ['CEO', 'Founder', 'Owner', 'Co-Founder'], company_domains: [domain], per_page: 3 })
+    const rComp = await fetch(baza + '/enrich/database/company/', { method: 'POST', headers, body: JSON.stringify({ domain }) });
+    rezultat.hapi1_company_status = rComp.status;
+    const dComp = await rComp.json();
+    rezultat.hapi1_company_body = dComp;
+    const komp = dComp.data;
+    const companyLink = komp && (komp.linkedin_link || komp.linkedin_url);
+    rezultat.companyLinkGjetur = companyLink || null;
+    if (!companyLink) return res.json(rezultat);
+
+    const rSearch = await fetch(baza + '/search/database/leads/', {
+      method: 'POST', headers, body: JSON.stringify({ job_titles: ['CEO', 'Founder', 'Owner', 'Co-Founder'], company_link: companyLink, limit_by: 3 })
     });
-    rezultat.hapi1_status = rSearch.status;
-    rezultat.hapi1_statusText = rSearch.statusText;
-    rezultat.hapi1_body = await rSearch.text();
-  } catch (e) { rezultat.hapi1_gabim = e.message; }
+    rezultat.hapi2_search_status = rSearch.status;
+    const dSearch = await rSearch.json();
+    rezultat.hapi2_search_body = dSearch;
+    const leads = (dSearch.data && dSearch.data.leads) || dSearch.data || [];
+    if (!leads.length || !leads[0].id) return res.json(rezultat);
+
+    const rEmail = await fetch(baza + '/email/find/', { method: 'POST', headers, body: JSON.stringify({ lead_id: leads[0].id }) });
+    rezultat.hapi3_email_status = rEmail.status;
+    rezultat.hapi3_email_body = await rEmail.json();
+  } catch (e) { rezultat.gabim = e.message; }
   res.json(rezultat);
 });
 
