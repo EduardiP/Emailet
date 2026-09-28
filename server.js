@@ -87,12 +87,26 @@ function identifikuesPersoni(lead) {
 }
 function nxjerrEmail(d) {
   if (!d) return null;
+  // Generect e kthen email-in e verifikuar te "valid_email" (me "result":"valid").
+  if (typeof d.valid_email === 'string' && d.valid_email && d.valid_email !== 'none' && (!d.result || d.result === 'valid')) return d.valid_email;
   if (typeof d.email === 'string' && d.email) return d.email;
   if (Array.isArray(d.emails) && d.emails.length) {
     const e = d.emails[0];
     return typeof e === 'string' ? e : ((e && e.email) || null);
   }
   return null;
+}
+// Zgjedh personin me rolin me vendimmarres: CEO, pastaj Founder, pastaj Owner, pastaj cilido tjeter.
+function zgjidhPersonin(leads) {
+  if (!Array.isArray(leads) || !leads.length) return null;
+  const pike = l => {
+    const t = String(l.job_title || l.raw_job_title || '');
+    if (/chief executive|\bceo\b/i.test(t)) return 0;
+    if (/founder/i.test(t)) return 1;
+    if (/\bowner\b/i.test(t)) return 2;
+    return 3;
+  };
+  return leads.slice().sort((a, b) => pike(a) - pike(b))[0];
 }
 
 async function gjejEmailPerDomain(domain) {
@@ -115,7 +129,7 @@ async function gjejEmailPerDomain(domain) {
     });
     const dSearch = await rSearch.json();
     const leads = (dSearch.data && dSearch.data.leads) || dSearch.data || [];
-    const identifikues = identifikuesPersoni(leads[0]);
+    const identifikues = identifikuesPersoni(zgjidhPersonin(leads));
     if (!identifikues) return null;
 
     const rEmail = await fetch(baza + '/email/find/', {
@@ -317,6 +331,7 @@ app.get('/api/test-email', async (req, res) => {
     const rComp = await fetch(baza + '/enrich/database/company/', { method: 'POST', headers, body: JSON.stringify({ domain }) });
     permbledhje.hapi1_status = rComp.status;
     const dComp = await rComp.json();
+    permbledhje.kostoja_hapi1 = dComp.meta ? dComp.meta.amount_charged : null;
     const komp = dComp.data;
     permbledhje.kompania = komp ? { emri: komp.name, domain: komp.domain, punonjes: komp.headcount_exact, linkedin_urn: komp.linkedin_urn } : null;
     const companyLink = komp && (komp.linkedin_link || komp.linkedin_url || (komp.linkedin_urn ? ('https://www.linkedin.com/company/' + komp.linkedin_urn + '/') : null));
@@ -328,9 +343,12 @@ app.get('/api/test-email', async (req, res) => {
     });
     permbledhje.hapi2_status = rSearch.status;
     const dSearch = await rSearch.json();
+    permbledhje.kostoja_hapi2 = dSearch.meta ? dSearch.meta.amount_charged : null;
     const leads = (dSearch.data && dSearch.data.leads) || dSearch.data || [];
     permbledhje.personat = leads.map(l => ({ emri: l.full_name, titulli: l.job_title, kompania: l.company_name, linkedin_url: l.linkedin_url, ka_id: !!l.id }));
-    const identifikues = identifikuesPersoni(leads[0]);
+    const identifikues = identifikuesPersoni(zgjidhPersonin(leads));
+    const zgjedhur = zgjidhPersonin(leads);
+    permbledhje.zgjedhur = zgjedhur ? { emri: zgjedhur.full_name, titulli: zgjedhur.job_title } : null;
     permbledhje.identifikuesiPerdorur = identifikues;
     if (!identifikues) return res.json(rezultat);
 
@@ -338,6 +356,7 @@ app.get('/api/test-email', async (req, res) => {
     permbledhje.hapi3_status = rEmail.status;
     const dEmail = await rEmail.json();
     permbledhje.email = nxjerrEmail(dEmail.data);
+    permbledhje.verifikimi = dEmail.data ? { result: dEmail.data.result, catch_all: dEmail.data.catch_all } : null;
     permbledhje.kostoja_hapi3 = dEmail.meta ? dEmail.meta.amount_charged : null;
     detaje.hapi3_email_body = dEmail;
   } catch (e) { permbledhje.gabim = e.message; }
