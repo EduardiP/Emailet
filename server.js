@@ -89,7 +89,7 @@ async function gjejEmailPerDomain(domain) {
     const dComp = await rComp.json();
     const komp = dComp.data;
     if (!komp) return null;
-    const companyLink = komp.linkedin_link || komp.linkedin_url;
+    const companyLink = komp.linkedin_link || komp.linkedin_url || (komp.linkedin_urn ? ('https://www.linkedin.com/company/' + komp.linkedin_urn + '/') : null);
     if (!companyLink) return null;
 
     const rSearch = await fetch(baza + '/search/database/leads/', {
@@ -299,7 +299,7 @@ app.get('/api/test-email', async (req, res) => {
     const dComp = await rComp.json();
     rezultat.hapi1_company_body = dComp;
     const komp = dComp.data;
-    const companyLink = komp && (komp.linkedin_link || komp.linkedin_url);
+    const companyLink = komp && (komp.linkedin_link || komp.linkedin_url || (komp.linkedin_urn ? ('https://www.linkedin.com/company/' + komp.linkedin_urn + '/') : null));
     rezultat.companyLinkGjetur = companyLink || null;
     if (!companyLink) return res.json(rezultat);
 
