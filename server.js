@@ -21,6 +21,7 @@ pool.query(`CREATE TABLE IF NOT EXISTS bizneset_gjetur (
   email TEXT,
   gjetur_at TIMESTAMPTZ DEFAULT now()
 )`).catch(e => console.error('migrim:', e.message));
+pool.query(`ALTER TABLE bizneset_gjetur ADD COLUMN IF NOT EXISTS email_statusi TEXT`).catch(e => console.error('migrim email_statusi:', e.message));
 
 function domainNga(url) {
   try {
@@ -110,34 +111,62 @@ function zgjidhPersonin(leads) {
 }
 
 async function gjejEmailPerDomain(domain) {
-  if (!GENERECT_KEY) return null;
+  // Kthen { email, arsyeja }. arsyeja: gjetur | pa_kompani | pa_person | pa_email | gabim
+  if (!GENERECT_KEY) return { email: null, arsyeja: 'gabim' };
   const headers = { 'Content-Type': 'application/json', 'Authorization': 'Token ' + GENERECT_KEY };
   const baza = 'https://api.generect.com/api/v1';
-  try {
-    const rComp = await fetch(baza + '/enrich/database/company/', {
-      method: 'POST', headers, body: JSON.stringify({ domain })
-    });
-    const dComp = await rComp.json();
-    const komp = dComp.data;
-    if (!komp) return null;
-    const companyLink = komp.linkedin_link || komp.linkedin_url || (komp.linkedin_urn ? ('https://www.linkedin.com/company/' + komp.linkedin_urn + '/') : null);
-    if (!companyLink) return null;
 
-    const rSearch = await fetch(baza + '/search/database/leads/', {
-      method: 'POST', headers,
-      body: JSON.stringify({ job_titles: ['CEO', 'Founder', 'Owner', 'Co-Founder'], company_link: companyLink, limit_by: 3 })
-    });
-    const dSearch = await rSearch.json();
-    const leads = (dSearch.data && dSearch.data.leads) || dSearch.data || [];
-    const identifikues = identifikuesPersoni(zgjidhPersonin(leads));
-    if (!identifikues) return null;
+  // Nje thirrje me nje riprovim, nese rrjeti deshton ose serveri kthen 429/5xx.
+  async function thirr(rruga, trupi) {
+    for (let prove = 0; prove < 2; prove++) {
+      try {
+        const r = await fetch(baza + rruga, { method: 'POST', headers, body: JSON.stringify(trupi) });
+        if ((r.status === 429 || r.status >= 500) && prove === 0) {
+          await new Promise(z => setTimeout(z, 2000));
+          continue;
+        }
+        let d = null;
+        try { d = await r.json(); } catch (e) { d = null; }
+        return { ok: r.ok, status: r.status, d };
+      } catch (e) {
+        if (prove === 0) { await new Promise(z => setTimeout(z, 2000)); continue; }
+        return { ok: false, status: 0, d: null };
+      }
+    }
+    return { ok: false, status: 0, d: null };
+  }
 
-    const rEmail = await fetch(baza + '/email/find/', {
-      method: 'POST', headers, body: JSON.stringify(identifikues)
-    });
-    const dEmail = await rEmail.json();
-    return nxjerrEmail(dEmail.data);
-  } catch (e) { return null; }
+  const c = await thirr('/enrich/database/company/', { domain });
+  if (c.status === 404) return { email: null, arsyeja: 'pa_kompani' };
+  if (!c.ok) return { email: null, arsyeja: 'gabim' };
+  const komp = c.d && c.d.data;
+  const link = komp && (komp.linkedin_link || komp.linkedin_url || (komp.linkedin_urn ? ('https://www.linkedin.com/company/' + komp.linkedin_urn + '/') : null));
+  if (!link) return { email: null, arsyeja: 'pa_kompani' };
+
+  const s = await thirr('/search/database/leads/', { job_titles: ['CEO', 'Founder', 'Owner', 'Co-Founder'], company_link: link, limit_by: 3 });
+  if (!s.ok) return { email: null, arsyeja: 'gabim' };
+  const dd = s.d && s.d.data;
+  const leads = (dd && dd.leads) || (Array.isArray(dd) ? dd : []);
+  const identifikues = identifikuesPersoni(zgjidhPersonin(leads));
+  if (!identifikues) return { email: null, arsyeja: 'pa_person' };
+
+  const e = await thirr('/email/find/', identifikues);
+  if (e.status === 404) return { email: null, arsyeja: 'pa_email' };
+  if (!e.ok) return { email: null, arsyeja: 'gabim' };
+  const email = nxjerrEmail(e.d && e.d.data);
+  return email ? { email, arsyeja: 'gjetur' } : { email: null, arsyeja: 'pa_email' };
+}
+
+// Ekzekuton fn per cdo element, me maksimumi "kufi" njekohesisht.
+async function punoMeKonkurrence(elementet, kufi, fn) {
+  let i = 0;
+  const punetoret = Array.from({ length: Math.min(kufi, elementet.length) }, async () => {
+    while (i < elementet.length) {
+      const idx = i++;
+      await fn(elementet[idx], idx);
+    }
+  });
+  await Promise.all(punetoret);
 }
 
 app.get('/', (req, res) => {
@@ -177,7 +206,7 @@ app.get('/', (req, res) => {
   </div>
 
   <div class="sec-panel aktiv" id="panelGjenerim">
-    <p class="mut">Shkruaj kategorine, kliko Kerko. Per cdo biznes te ri, te pranuar nga filtri, kerkohet automatikisht edhe email-i (Generect) para se te shfaqen rezultatet — kjo mund te marre disa minuta.</p>
+    <p class="mut">Shkruaj kategorine dhe kliko Kerko. Kerkimi punon ne sfond dhe tregon progresin; rezultatet shfaqen kur perfundon (mund te marre 5-15 minuta). Nese e mbyll faqen, kerkimi vazhdon dhe e sheh rezultatin kur e hap sersish.</p>
     <div class="row">
       <input type="text" id="query" placeholder='p.sh. Recruiting and ATS software companies' />
       <input type="text" id="kategoria" placeholder="Etikete kategorie (p.sh. recruiting-ats)" style="max-width:220px;" />
@@ -206,6 +235,7 @@ app.get('/', (req, res) => {
   </div>
 </div>
 <script>
+var pollTimer = null;
 function ndryshoTab(cila){
   document.getElementById('tabGjenerim').className = cila === 'gjenerim' ? 'tab aktiv' : 'tab';
   document.getElementById('tabRuajtura').className = cila === 'ruajtura' ? 'tab aktiv' : 'tab';
@@ -213,109 +243,189 @@ function ndryshoTab(cila){
   document.getElementById('panelRuajtura').className = cila === 'ruajtura' ? 'sec-panel aktiv' : 'sec-panel';
   if(cila === 'ruajtura'){ ngarkoKategorite(); shikoTeGjitha(); }
 }
+function tekstArsyeja(a){
+  if(a === 'pa_kompani') return 'nuk u gjet kompania te Generect';
+  if(a === 'pa_person') return 'nuk u gjet CEO, Founder apo Owner';
+  if(a === 'pa_email') return 'personi u gjet, por email nuk u verifikua';
+  if(a === 'gabim') return 'gabim gjate kerkimit, kontrollo balancen';
+  return '';
+}
+function qelizaEmail(email, arsyeja){
+  if(email){ return esc(email); }
+  return '<span style="color:#8b949e;">— ' + esc(tekstArsyeja(arsyeja)) + '</span>';
+}
 async function kerko(){
-  const query = document.getElementById('query').value.trim();
-  const kategoria = document.getElementById('kategoria').value.trim() || 'pa-etikete';
-  const qeVitiEkziston = document.getElementById('qeVitiEkziston').value.trim();
-  const btn = document.getElementById('btn'), status = document.getElementById('status'), count = document.getElementById('count');
-  const rez = document.getElementById('rez'), rezBody = document.getElementById('rezBody');
+  var query = document.getElementById('query').value.trim();
+  var kategoria = document.getElementById('kategoria').value.trim() || 'pa-etikete';
+  var qeVitiEkziston = document.getElementById('qeVitiEkziston').value.trim();
+  var status = document.getElementById('status'), count = document.getElementById('count');
+  var btn = document.getElementById('btn');
   if(!query){ status.textContent = 'Shkruaj nje query fillimisht.'; return; }
-  btn.disabled = true; btn.textContent = 'Duke punuar (Exa + filtrim + email)...'; status.textContent = 'Kjo mund te marre disa minuta, sepse kerkohet email per cdo biznes te ri, para se te shfaqen rezultatet.'; count.textContent = ''; rez.style.display = 'none'; rezBody.innerHTML = '';
+  btn.disabled = true; count.textContent = ''; document.getElementById('rez').style.display = 'none';
+  status.textContent = 'Duke filluar...';
   try{
-    const r = await fetch('/api/kerko', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ query, kategoria, qeVitiEkziston }) });
-    const d = await r.json();
-    if(d.error){ status.textContent = 'Gabim: ' + d.error; btn.disabled=false; btn.textContent='Kerko (te reja)'; return; }
+    var r = await fetch('/api/kerko', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ query: query, kategoria: kategoria, qeVitiEkziston: qeVitiEkziston }) });
+    var d = await r.json();
+    if(r.status === 409){ filloPolling(); return; }
+    if(!r.ok || d.error){ status.textContent = 'Gabim: ' + (d.error || 'kerkesa deshtoi'); btn.disabled = false; return; }
+    filloPolling();
+  }catch(e){ status.textContent = 'Gabim rrjeti: ' + e.message; btn.disabled = false; }
+}
+function filloPolling(){
+  if(pollTimer){ clearInterval(pollTimer); }
+  perditesoStatusin();
+  pollTimer = setInterval(perditesoStatusin, 3000);
+}
+async function perditesoStatusin(){
+  var status = document.getElementById('status'), count = document.getElementById('count'), btn = document.getElementById('btn');
+  try{
+    var r = await fetch('/api/statusi');
+    var d = await r.json();
+    var p = d.puna;
+    if(!p){ btn.disabled = false; if(pollTimer){ clearInterval(pollTimer); pollTimer = null; } return; }
+    if(p.statusi === 'duke_punuar'){ btn.disabled = true; status.textContent = p.mesazhi; return; }
+    if(pollTimer){ clearInterval(pollTimer); pollTimer = null; }
+    btn.disabled = false;
+    if(p.statusi === 'gabim'){ status.textContent = 'Gabim: ' + p.gabim; return; }
     status.textContent = '';
-    count.textContent = d.reja.length + ' TE REJA u ruajten (Exa ktheu ' + d.gjithsejKthyerNgaExa + ' gjithsej, ' + d.perjashtuar + ' ishin tashme te njohura, ' + d.zhurmeHequr + ' u perjashtuan nga filtri/AI).';
-    renderRreshtaMeStatus(d.teGjitha);
-  }catch(e){ status.textContent = 'Gabim rrjeti: ' + e.message; }
-  btn.disabled = false; btn.textContent = 'Kerko (te reja)';
+    count.textContent = p.permbledhje;
+    renderRreshtaMeStatus(p.teGjitha || []);
+  }catch(e){ }
 }
 async function ngarkoKategorite(){
   try{
-    const r = await fetch('/api/kategorite');
-    const d = await r.json();
-    const sel = document.getElementById('filterKategoria');
-    const aktuale = sel.value;
-    sel.innerHTML = '<option value="">Te gjitha kategorite</option>' + d.kategorite.map(k => '<option value="'+esc(k)+'">'+esc(k)+'</option>').join('');
+    var r = await fetch('/api/kategorite');
+    var d = await r.json();
+    var sel = document.getElementById('filterKategoria');
+    var aktuale = sel.value;
+    sel.innerHTML = '<option value="">Te gjitha kategorite</option>' + d.kategorite.map(function(k){ return '<option value="'+esc(k)+'">'+esc(k)+'</option>'; }).join('');
     sel.value = aktuale;
   }catch(e){}
 }
 async function shikoTeGjitha(){
-  const status2 = document.getElementById('status2'), count2 = document.getElementById('count2');
-  const rez2 = document.getElementById('rez2'), rez2Body = document.getElementById('rez2Body');
-  const kategoria = document.getElementById('filterKategoria').value;
+  var status2 = document.getElementById('status2'), count2 = document.getElementById('count2');
+  var rez2 = document.getElementById('rez2'), rez2Body = document.getElementById('rez2Body');
+  var kategoria = document.getElementById('filterKategoria').value;
   status2.textContent = 'Duke ngarkuar...'; rez2Body.innerHTML = '';
   try{
-    const r = await fetch('/api/te-gjitha' + (kategoria ? ('?kategoria=' + encodeURIComponent(kategoria)) : ''));
-    const d = await r.json();
+    var r = await fetch('/api/te-gjitha' + (kategoria ? ('?kategoria=' + encodeURIComponent(kategoria)) : ''));
+    var d = await r.json();
     status2.textContent = '';
     count2.textContent = d.rows.length + ' total.';
     if(d.rows.length){
       rez2.style.display = 'table';
-      rez2Body.innerHTML = d.rows.map(x => '<tr><td>'+esc(x.email||'—')+'</td><td>'+esc(x.domain)+'</td><td>'+esc(x.emri||'')+'</td></tr>').join('');
+      rez2Body.innerHTML = d.rows.map(function(x){ return '<tr><td>'+qelizaEmail(x.email, x.email_statusi)+'</td><td>'+esc(x.domain)+'</td><td>'+esc(x.emri||'')+'</td></tr>'; }).join('');
     } else { rez2.style.display = 'none'; }
   }catch(e){ status2.textContent = 'Gabim: ' + e.message; }
 }
 function renderRreshtaMeStatus(rows){
-  const rez = document.getElementById('rez'), rezBody = document.getElementById('rezBody');
+  var rez = document.getElementById('rez'), rezBody = document.getElementById('rezBody');
   if(rows.length){
     rez.style.display = 'table';
-    rezBody.innerHTML = rows.map((x,i) => '<tr><td>'+(i+1)+'</td><td>'+esc(x.emri||'')+'</td><td><a href="'+esc(x.url)+'" target="_blank">'+esc(x.domain)+'</a></td><td>'+esc(x.pershkrimi||'')+'</td><td><span class="badge">'+esc(x.kategoria||'')+'</span></td><td>'+(x.pranuar?'green':'red')+'</td><td>'+esc(x.email||'—')+'</td></tr>').join('');
+    rezBody.innerHTML = rows.map(function(x,i){
+      var emailCell = x.pranuar ? qelizaEmail(x.email, x.arsyeja) : '—';
+      return '<tr><td>'+(i+1)+'</td><td>'+esc(x.emri||'')+'</td><td><a href="'+esc(x.url)+'" target="_blank">'+esc(x.domain)+'</a></td><td>'+esc(x.pershkrimi||'')+'</td><td><span class="badge">'+esc(x.kategoria||'')+'</span></td><td>'+(x.pranuar?'🟢':'🔴')+'</td><td>'+emailCell+'</td></tr>';
+    }).join('');
   }
 }
-function esc(s){ return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function esc(s){ return String(s||'').replace(/[&<>"']/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]; }); }
+(async function(){
+  try{
+    var r = await fetch('/api/statusi');
+    var d = await r.json();
+    if(d.puna){ filloPolling(); }
+  }catch(e){}
+})();
 </script>
 </body></html>`);
 });
+
+// Gjendja e punes se fundit (ne memorie). Kerkimi punon ne sfond; faqja pyet /api/statusi per progresin.
+let puna = null;
+
+async function punoKerkimin(p, params) {
+  const { query, kategoria, qeVitiEkziston } = params;
+  p.mesazhi = 'Hapi 1 nga 3: kerkim te Exa...';
+  const ekzistuese = await pool.query('SELECT domain FROM bizneset_gjetur');
+  const excludeDomains = ekzistuese.rows.map(r => r.domain);
+
+  const body = { query, numResults: 100, contents: { highlights: { numSentences: 2 } } };
+  if (excludeDomains.length) body.excludeDomains = excludeDomains.slice(0, 1200);
+  if (qeVitiEkziston && /^\d{4}$/.test(String(qeVitiEkziston))) {
+    body.startPublishedDate = qeVitiEkziston + '-01-01T00:00:00.000Z';
+  }
+  const r = await fetch('https://api.exa.ai/search', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + EXA_KEY }, body: JSON.stringify(body)
+  });
+  if (!r.ok) { const t = await r.text(); throw new Error('Exa ' + r.status + ': ' + t.slice(0, 300)); }
+  const data = await r.json();
+  const gjetur = data.results || [];
+
+  p.mesazhi = 'Hapi 2 nga 3: filtrim (rregulla + AI) i ' + gjetur.length + ' rezultateve...';
+  const kaluaFiltrinFiks = gjetur.filter(x => !eshteZhurme(x.url, x.title));
+  const vendimeAI = await filtroMeAI(kaluaFiltrinFiks);
+  const vendimPerUrl = new Map();
+  kaluaFiltrinFiks.forEach((x, i) => vendimPerUrl.set(x.url, vendimeAI[i]));
+
+  // Bashko dublikatet: nje domain i pranuar = nje biznes = nje kerkim email-i.
+  const teGjitha = [];
+  const tashmeTeParaqitur = new Set();
+  let dublikate = 0;
+  for (const x of gjetur) {
+    const domain = domainNga(x.url);
+    const pranuar = !eshteZhurme(x.url, x.title) && vendimPerUrl.get(x.url) !== false;
+    if (pranuar && tashmeTeParaqitur.has(domain)) { dublikate++; continue; }
+    if (pranuar) tashmeTeParaqitur.add(domain);
+    teGjitha.push({
+      domain,
+      emri: x.title || domain,
+      url: x.url,
+      pershkrimi: (x.highlights && x.highlights[0]) ? x.highlights[0].slice(0, 300) : '',
+      kategoria,
+      pranuar,
+      email: null,
+      arsyeja: null
+    });
+  }
+  const perPunuar = teGjitha.filter(x => x.pranuar);
+  const refuzuar = teGjitha.length - perPunuar.length;
+
+  let bere = 0, gjeturEmail = 0, gabime = 0;
+  p.mesazhi = 'Hapi 3 nga 3: kerkim email-esh (0 nga ' + perPunuar.length + ')...';
+  await punoMeKonkurrence(perPunuar, 3, async (rreshti) => {
+    const rez = await gjejEmailPerDomain(rreshti.domain);
+    rreshti.email = rez.email;
+    rreshti.arsyeja = rez.arsyeja;
+    await pool.query(
+      'INSERT INTO bizneset_gjetur (domain, emri, url, pershkrimi, kategoria, email, email_statusi) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (domain) DO NOTHING',
+      [rreshti.domain, rreshti.emri, rreshti.url, rreshti.pershkrimi, kategoria, rez.email, rez.arsyeja]
+    );
+    bere++;
+    if (rez.email) gjeturEmail++;
+    if (rez.arsyeja === 'gabim') gabime++;
+    p.mesazhi = 'Hapi 3 nga 3: kerkim email-esh (' + bere + ' nga ' + perPunuar.length + ', te gjetura: ' + gjeturEmail + ')...';
+  });
+
+  p.teGjitha = teGjitha;
+  p.permbledhje = perPunuar.length + ' biznese te reja u ruajten (Exa ktheu ' + gjetur.length + ' rezultate; '
+    + dublikate + ' faqe te tjera te te njejtit domain u bashkuan; ' + refuzuar + ' u perjashtuan nga filtri/AI). '
+    + 'Email u gjet per ' + gjeturEmail + ' nga ' + perPunuar.length + (gabime ? ('; ' + gabime + ' me gabim, kontrollo balancen e Generect') : '') + '.';
+  p.statusi = 'perfunduar';
+}
 
 app.post('/api/kerko', async (req, res) => {
   if (!EXA_KEY) return res.status(500).json({ error: 'EXA_API_KEY nuk eshte konfiguruar.' });
   const { query, kategoria, qeVitiEkziston } = req.body || {};
   if (!query) return res.status(400).json({ error: 'Mungon query.' });
-  try {
-    const ekzistuese = await pool.query('SELECT domain FROM bizneset_gjetur');
-    const excludeDomains = ekzistuese.rows.map(r => r.domain);
+  if (puna && puna.statusi === 'duke_punuar') return res.status(409).json({ error: 'Nje kerkim po punon ende. Prit sa te perfundoje.' });
+  const kjo = { statusi: 'duke_punuar', mesazhi: 'Duke filluar...', filluar: Date.now() };
+  puna = kjo;
+  punoKerkimin(kjo, { query, kategoria, qeVitiEkziston }).catch(e => { kjo.statusi = 'gabim'; kjo.gabim = e.message; });
+  res.json({ ok: true });
+});
 
-    const body = { query, numResults: 100, contents: { highlights: { numSentences: 2 } } };
-    if (excludeDomains.length) body.excludeDomains = excludeDomains.slice(0, 1200);
-    if (qeVitiEkziston && /^\d{4}$/.test(String(qeVitiEkziston))) {
-      body.startPublishedDate = qeVitiEkziston + '-01-01T00:00:00.000Z';
-    }
-
-    const r = await fetch('https://api.exa.ai/search', {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + EXA_KEY }, body: JSON.stringify(body)
-    });
-    if (!r.ok) { const t = await r.text(); return res.status(500).json({ error: 'Exa ' + r.status + ': ' + t.slice(0, 300) }); }
-    const data = await r.json();
-    const gjetur = data.results || [];
-
-    const kaluaFiltrinFiks = gjetur.filter(x => !eshteZhurme(x.url, x.title));
-    const vendimeAI = await filtroMeAI(kaluaFiltrinFiks);
-    const vendimAIPerDomain = {};
-    kaluaFiltrinFiks.forEach((x, i) => { vendimAIPerDomain[domainNga(x.url)] = vendimeAI[i]; });
-
-    const teGjitha = [];
-    for (const x of gjetur) {
-      const domain = domainNga(x.url);
-      const emri = x.title || domain;
-      const pershkrimi = (x.highlights && x.highlights[0]) ? x.highlights[0].slice(0, 300) : '';
-      const eshteZhurmeFikse = eshteZhurme(x.url, x.title);
-      const pranuar = !eshteZhurmeFikse && (vendimAIPerDomain[domain] !== false);
-      let email = null;
-      if (pranuar) {
-        // Kerkohet email-i TANI, brenda te njejtit proces, para se te ruajme/shfaqim rezultatin.
-        email = await gjejEmailPerDomain(domain);
-        await pool.query(
-          'INSERT INTO bizneset_gjetur (domain, emri, url, pershkrimi, kategoria, email) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (domain) DO NOTHING',
-          [domain, emri, x.url, pershkrimi, kategoria, email]
-        );
-      }
-      teGjitha.push({ domain, emri, url: x.url, pershkrimi, kategoria, pranuar, email });
-    }
-    const reja = teGjitha.filter(x => x.pranuar);
-    res.json({ reja, teGjitha, perjashtuar: excludeDomains.length, gjithsejKthyerNgaExa: gjetur.length, zhurmeHequr: teGjitha.length - reja.length });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+app.get('/api/statusi', (req, res) => {
+  res.json({ puna });
 });
 
 app.get('/api/test-email', async (req, res) => {
@@ -375,9 +485,9 @@ app.get('/api/te-gjitha', async (req, res) => {
     const { kategoria } = req.query;
     let r;
     if (kategoria) {
-      r = await pool.query('SELECT email, domain, emri FROM bizneset_gjetur WHERE kategoria=$1 ORDER BY gjetur_at DESC', [kategoria]);
+      r = await pool.query('SELECT email, email_statusi, domain, emri FROM bizneset_gjetur WHERE kategoria=$1 ORDER BY gjetur_at DESC', [kategoria]);
     } else {
-      r = await pool.query('SELECT email, domain, emri FROM bizneset_gjetur ORDER BY gjetur_at DESC');
+      r = await pool.query('SELECT email, email_statusi, domain, emri FROM bizneset_gjetur ORDER BY gjetur_at DESC');
     }
     res.json({ rows: r.rows });
   } catch (e) { res.status(500).json({ error: e.message }); }
