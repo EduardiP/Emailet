@@ -203,6 +203,7 @@ app.get('/', (req, res) => {
   <div class="tabs">
     <div class="tab aktiv" id="tabGjenerim" onclick="ndryshoTab('gjenerim')">Gjenerim</div>
     <div class="tab" id="tabRuajtura" onclick="ndryshoTab('ruajtura')">Bizneset e ruajtura</div>
+    <div class="tab" id="tabShkarko" onclick="ndryshoTab('shkarko')">Shkarko</div>
   </div>
 
   <div class="sec-panel aktiv" id="panelGjenerim">
@@ -233,15 +234,27 @@ app.get('/', (req, res) => {
       <tbody id="rez2Body"></tbody>
     </table>
   </div>
+
+  <div class="sec-panel" id="panelShkarko">
+    <p class="mut">Zgjidh kategorine, shkarko nje skedar CSV gati per t'u importuar te Mailmeteor (Contacts &gt; Import contacts &gt; Import a CSV). Perfshihen vetem bizneset qe kane email real.</p>
+    <div class="row">
+      <select id="shkarkoKategoria"><option value="">Te gjitha kategorite</option></select>
+      <button onclick="shkarkoCSV()">Shkarko CSV</button>
+    </div>
+    <div id="statusShkarko"></div>
+  </div>
 </div>
 <script>
 var pollTimer = null;
 function ndryshoTab(cila){
   document.getElementById('tabGjenerim').className = cila === 'gjenerim' ? 'tab aktiv' : 'tab';
   document.getElementById('tabRuajtura').className = cila === 'ruajtura' ? 'tab aktiv' : 'tab';
+  document.getElementById('tabShkarko').className = cila === 'shkarko' ? 'tab aktiv' : 'tab';
   document.getElementById('panelGjenerim').className = cila === 'gjenerim' ? 'sec-panel aktiv' : 'sec-panel';
   document.getElementById('panelRuajtura').className = cila === 'ruajtura' ? 'sec-panel aktiv' : 'sec-panel';
-  if(cila === 'ruajtura'){ ngarkoKategorite(); shikoTeGjitha(); }
+  document.getElementById('panelShkarko').className = cila === 'shkarko' ? 'sec-panel aktiv' : 'sec-panel';
+  if(cila === 'ruajtura'){ ngarkoKategorite('filterKategoria'); shikoTeGjitha(); }
+  if(cila === 'shkarko'){ ngarkoKategorite('shkarkoKategoria'); }
 }
 function tekstArsyeja(a){
   if(a === 'pa_kompani') return 'nuk u gjet kompania te Generect';
@@ -292,15 +305,23 @@ async function perditesoStatusin(){
     renderRreshtaMeStatus(p.teGjitha || []);
   }catch(e){ }
 }
-async function ngarkoKategorite(){
+async function ngarkoKategorite(idSelect){
   try{
     var r = await fetch('/api/kategorite');
     var d = await r.json();
-    var sel = document.getElementById('filterKategoria');
+    var sel = document.getElementById(idSelect);
     var aktuale = sel.value;
     sel.innerHTML = '<option value="">Te gjitha kategorite</option>' + d.kategorite.map(function(k){ return '<option value="'+esc(k)+'">'+esc(k)+'</option>'; }).join('');
     sel.value = aktuale;
   }catch(e){}
+}
+function shkarkoCSV(){
+  var kategoria = document.getElementById('shkarkoKategoria').value;
+  var statusShkarko = document.getElementById('statusShkarko');
+  statusShkarko.textContent = 'Duke pergatitur...';
+  var url = '/api/eksporto-csv' + (kategoria ? ('?kategoria=' + encodeURIComponent(kategoria)) : '');
+  window.location.href = url;
+  setTimeout(function(){ statusShkarko.textContent = ''; }, 2000);
 }
 async function shikoTeGjitha(){
   var status2 = document.getElementById('status2'), count2 = document.getElementById('count2');
@@ -480,14 +501,41 @@ app.get('/api/kategorite', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+function arratisCSV(vlera) {
+  const tekst = String(vlera == null ? '' : vlera);
+  if (/[",\n]/.test(tekst)) return '"' + tekst.replace(/"/g, '""') + '"';
+  return tekst;
+}
+
+app.get('/api/eksporto-csv', async (req, res) => {
+  try {
+    const { kategoria } = req.query;
+    let r;
+    if (kategoria) {
+      r = await pool.query("SELECT email, domain, emri FROM bizneset_gjetur WHERE kategoria=$1 AND email IS NOT NULL AND email NOT LIKE '(%' ORDER BY gjetur_at DESC", [kategoria]);
+    } else {
+      r = await pool.query("SELECT email, domain, emri FROM bizneset_gjetur WHERE email IS NOT NULL AND email NOT LIKE '(%' ORDER BY gjetur_at DESC");
+    }
+    const rreshta = ['email,domain,emri'];
+    for (const row of r.rows) {
+      rreshta.push([arratisCSV(row.email), arratisCSV(row.domain), arratisCSV(row.emri)].join(','));
+    }
+    const csv = rreshta.join('\n');
+    const emriSkedarit = 'bizneset' + (kategoria ? ('-' + kategoria) : '') + '.csv';
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="' + emriSkedarit + '"');
+    res.send(csv);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/te-gjitha', async (req, res) => {
   try {
     const { kategoria } = req.query;
     let r;
     if (kategoria) {
-      r = await pool.query('SELECT email, email_statusi, domain, emri FROM bizneset_gjetur WHERE kategoria=$1 ORDER BY gjetur_at DESC', [kategoria]);
+      r = await pool.query('SELECT email, email_statusi, domain, emri, kategoria FROM bizneset_gjetur WHERE kategoria=$1 ORDER BY gjetur_at DESC', [kategoria]);
     } else {
-      r = await pool.query('SELECT email, email_statusi, domain, emri FROM bizneset_gjetur ORDER BY gjetur_at DESC');
+      r = await pool.query('SELECT email, email_statusi, domain, emri, kategoria FROM bizneset_gjetur ORDER BY gjetur_at DESC');
     }
     res.json({ rows: r.rows });
   } catch (e) { res.status(500).json({ error: e.message }); }
