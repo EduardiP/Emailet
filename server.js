@@ -224,6 +224,13 @@ app.get('/', (req, res) => {
 
   <div class="sec-panel" id="panelRuajtura">
     <p class="mut">Vetem bizneset e pranuara (te reja), sipas kategorise se zgjedhur me poshte.</p>
+    <div class="row" style="border:1px solid #2a313c; border-radius:8px; padding:10px; margin-bottom:16px;">
+      <input type="text" id="manEmail" placeholder="Email (p.sh. test1@gmail.com)" style="max-width:220px;" />
+      <input type="text" id="manEmri" placeholder="Emer (opsionale)" style="max-width:180px;" />
+      <input type="text" id="manKategoria" placeholder="Kategori" value="emailet-e-proves" style="max-width:180px;" />
+      <button onclick="shtoManualisht()">Shto manualisht</button>
+    </div>
+    <div id="statusManual" class="status"></div>
     <div class="row">
       <select id="filterKategoria" onchange="shikoTeGjitha()"><option value="">Te gjitha kategorite</option></select>
     </div>
@@ -322,6 +329,24 @@ function shkarkoCSV(){
   var url = '/api/eksporto-csv' + (kategoria ? ('?kategoria=' + encodeURIComponent(kategoria)) : '');
   window.location.href = url;
   setTimeout(function(){ statusShkarko.textContent = ''; }, 2000);
+}
+async function shtoManualisht(){
+  var email = document.getElementById('manEmail').value.trim();
+  var emri = document.getElementById('manEmri').value.trim();
+  var kategoria = document.getElementById('manKategoria').value.trim() || 'emailet-e-proves';
+  var statusManual = document.getElementById('statusManual');
+  if(!email || !email.includes('@')){ statusManual.textContent = 'Shkruaj email te vlefshem.'; return; }
+  statusManual.textContent = 'Duke shtuar...';
+  try{
+    var r = await fetch('/api/shto-manualisht', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ email: email, emri: emri, kategoria: kategoria }) });
+    var d = await r.json();
+    if(d.error){ statusManual.textContent = 'Gabim: ' + d.error; return; }
+    statusManual.textContent = 'U shtua: ' + email;
+    document.getElementById('manEmail').value = '';
+    document.getElementById('manEmri').value = '';
+    ngarkoKategorite('filterKategoria');
+    shikoTeGjitha();
+  }catch(e){ statusManual.textContent = 'Gabim: ' + e.message; }
 }
 async function shikoTeGjitha(){
   var status2 = document.getElementById('status2'), count2 = document.getElementById('count2');
@@ -525,6 +550,30 @@ app.get('/api/eksporto-csv', async (req, res) => {
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename="' + emriSkedarit + '"');
     res.send(csv);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Shto kontakt manualisht (p.sh. per testim) — trajton rastin kur disa email-e ndajne te njejtin
+// domain (si @gmail.com), duke shtuar nje suffix te vogel per te shmangur konfliktin e uniqitetit te domain-it.
+app.post('/api/shto-manualisht', async (req, res) => {
+  const { email, emri, kategoria } = req.body || {};
+  if (!email || !email.includes('@')) return res.status(400).json({ error: 'Email i pavlefshem.' });
+  try {
+    let domainBaze = domainNga('http://' + email.split('@')[1]);
+    let domainPerRuajtje = domainBaze;
+    let provoi = 0;
+    while (true) {
+      const ekziston = await pool.query('SELECT 1 FROM bizneset_gjetur WHERE domain=$1', [domainPerRuajtje]);
+      if (!ekziston.rows.length) break;
+      provoi++;
+      domainPerRuajtje = domainBaze + '-' + provoi;
+      if (provoi > 50) return res.status(500).json({ error: 'Shume konflikte domain-i, provo tjeter email.' });
+    }
+    const ins = await pool.query(
+      'INSERT INTO bizneset_gjetur (domain, emri, url, pershkrimi, kategoria, email) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *',
+      [domainPerRuajtje, emri || email, 'mailto:' + email, 'Kontakt i shtuar manualisht.', kategoria || 'emailet-e-proves', email]
+    );
+    res.json({ ok: true, rreshti: ins.rows[0] });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
