@@ -348,6 +348,11 @@ function sheshoKompanine(c) {
 // Dokumentimi permend dy emra per celesin e renditjes ("column" ne shembuj, "field" ne nje shembull tjeter).
 // Provohen me radhe; nje gabim 400 nuk kushton kredite. Gabimet e tjera ndalojne menjehere.
 async function kerkoKompani(trupiBaze) {
+  // Kerkim semantik (me pershkrim): renditja eshte sipas perputhjes dhe dokumentimi nuk lejon "sorts" bashke me "search".
+  if (trupiBaze.search) {
+    const r = await crustdataThirr('POST', '/company/search', trupiBaze);
+    return { r, perdorur: { sorts: 'sipas pershtatshmerise me pershkrimin', trupi: trupiBaze } };
+  }
   const variantet = [
     { emri: 'column', sorts: [{ column: 'basic_info.year_founded', order: 'desc' }] },
     { emri: 'field', sorts: [{ field: 'basic_info.year_founded', order: 'desc' }] },
@@ -488,10 +493,11 @@ app.get('/', (req, res) => {
   </div>
 
   <div class="sec-panel" id="panelKompani">
-    <p class="mut">Gjen kompani te themeluara rishtas permes Crustdata. Ketu shfaqet vetem cfare kthen; asgje nuk ruhet dhe nuk gjendet email. Sipas dokumentimit, kerkimi kushton 0.03 kredite per rezultat, plus rreth 0.1 per filtrin e industrise dhe 0.2 per filtrin e punonjesve. Kostoja e sakte shfaqet pas cdo kerkese.</p>
+    <p class="mut">Gjen kompani te themeluara rishtas permes Crustdata. Ketu shfaqet vetem cfare kthen; asgje nuk ruhet dhe nuk gjendet email. Sipas dokumentimit, kerkimi kushton 0.03 kredite per rezultat, plus rreth 0.1 per filtrin e industrise dhe 0.2 per filtrin e punonjesve. Kostoja e sakte shfaqet pas cdo kerkese. Fusha "Fjale kyce" kerkon sipas kuptimit (jo vetem sipas etiketes se industrise) dhe, kur eshte e mbushur, i rendit rezultatet sipas perputhjes, jo sipas vitit; filtrat e tjere mbeten kushte te forta.</p>
     <div class="row">
       <div class="fusha"><span>Themeluar nga viti (perfshire)</span><input type="number" id="kompViti" value="2025" min="1990" max="2030" style="width:150px;" oninput="kompVleresim()" /></div>
       <div class="fusha"><span>Industria (opsionale)</span><input type="text" id="kompIndustria" value="Software Development" style="width:230px; flex:none; min-width:0;" oninput="kompVleresim()" /></div>
+      <div class="fusha"><span>Fjale kyce / pershkrim (opsionale)</span><input type="text" id="kompPershkrim" placeholder="p.sh. B2B SaaS per ekipe marketingu" style="width:300px; flex:none; min-width:0;" /></div>
       <div class="fusha"><span>Shteti (opsionale)</span><input type="text" id="kompShteti" placeholder="p.sh. USA" style="width:120px; flex:none; min-width:0;" /></div>
       <div class="fusha"><span>Maks. punonjes (opsionale)</span><input type="number" id="kompMaks" placeholder="p.sh. 50" min="1" style="width:150px;" oninput="kompVleresim()" /></div>
       <div class="fusha"><span>Sa rezultate</span><select id="kompLimit" onchange="kompVleresim()"><option value="5">5</option><option value="10" selected>10</option><option value="20">20</option><option value="50">50</option></select></div>
@@ -631,6 +637,7 @@ async function kompKerko(btn){
   var trupi = {
     viti: document.getElementById('kompViti').value,
     industria: document.getElementById('kompIndustria').value.trim(),
+    pershkrim: document.getElementById('kompPershkrim').value.trim(),
     shteti: document.getElementById('kompShteti').value.trim(),
     maksPunonjes: document.getElementById('kompMaks').value,
     limit: document.getElementById('kompLimit').value
@@ -1064,10 +1071,12 @@ app.post('/api/kompani-reja/kerko', async (req, res) => {
   }
   const industria = String(b.industria || '').trim().slice(0, 100);
   const shteti = String(b.shteti || '').trim().slice(0, 60);
+  const pershkrim = String(b.pershkrim || '').trim().slice(0, 200);
   const maks = parseInt(b.maksPunonjes, 10);
   const maksPunonjes = Number.isInteger(maks) && maks > 0 && maks <= 1000000 ? maks : null;
   const limit = Math.min(50, Math.max(1, parseInt(b.limit, 10) || 10)); // kufi i fortë 50, per te mbrojtur kreditet
   const trupiBaze = { filters: ndertoFiltratKompani({ viti, vitiMax: vitiAkt, industria, shteti, maksPunonjes }), fields: FUSHAT_KOMPANI, limit };
+  if (pershkrim) trupiBaze.search = { query: pershkrim, mode: 'hybrid' }; // sipas dokumentimit: filtrat mbeten kushte te forta, renditja eshte sipas perputhjes
   try {
     const { r, perdorur } = await kerkoKompani(trupiBaze);
     if (!r.ok) return res.status([400, 401, 403, 429].includes(r.status) ? r.status : 502).json({ error: mesazhGabimiCrustdata(r), kredite_perdorur: r.kredite });
