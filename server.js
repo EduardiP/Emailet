@@ -1,5 +1,5 @@
 // Mjet zbulimi bizneseh — Exa API (zbulim) + OpenAI (filtrim AI) + Generect (email) + PostgreSQL.
-// Variabla mjedisi te kerkuara ne Railway: EXA_API_KEY, OPENAI_API_KEY, GENERECT_API_KEY, DATABASE_URL.
+// Variabla mjedisi te kerkuara ne Railway: EXA_API_KEY, OPENAI_API_KEY, GENERECT_API_KEY, DATABASE_URL, SERPER_API_KEY (per tab-in Bisedat).
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -9,6 +9,7 @@ app.use(express.json());
 const EXA_KEY = process.env.EXA_API_KEY;
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
 const GENERECT_KEY = process.env.GENERECT_API_KEY;
+const SERPER_KEY = process.env.SERPER_API_KEY;
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
 
 pool.query(`CREATE TABLE IF NOT EXISTS bizneset_gjetur (
@@ -169,6 +170,68 @@ async function punoMeKonkurrence(elementet, kufi, fn) {
   await Promise.all(punetoret);
 }
 
+// ===== BISEDAT: gjetja e bisedave/temave ne internet =====
+// Rrjedha: pershkrim nga ti -> OpenAI e kthen ne kerkesa Google -> dergohen te Serper.
+// Variabla te nevojshme te Railway: SERPER_API_KEY (e re), OPENAI_API_KEY (ekziston tashme).
+const OPENAI_MODELI = 'gpt-5-nano'; // i njejti model qe perdor tashme filtroMeAI
+const KOHET_E_LEJUARA = ['h', 'd', 'w', 'm', 'y'];
+
+async function fetchMeKohe(url, opsionet, ms) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try { return await fetch(url, Object.assign({}, opsionet, { signal: ctrl.signal })); }
+  finally { clearTimeout(t); }
+}
+
+// Nxjerr listen JSON nga pergjigja e AI-se (edhe nese e rrethon me tekst apo ```).
+function nxirrListeJSON(tekst) {
+  const i = tekst.indexOf('['), j = tekst.lastIndexOf(']');
+  if (i === -1 || j <= i) return null;
+  try { const a = JSON.parse(tekst.slice(i, j + 1)); return Array.isArray(a) ? a : null; }
+  catch (e) { return null; }
+}
+
+async function formuloKerkesatMeAI(pershkrim, numri) {
+  if (!OPENAI_KEY) throw new Error('OPENAI_API_KEY mungon te Railway → Variables.');
+  const prompt =
+    'You convert a business owner\'s plain-language description of the online conversations they want to find ' +
+    'into Google search queries.\n' +
+    'Return ONLY a JSON array of ' + numri + ' strings: no prose, no code fences.\n' +
+    'Each query is a short, natural Google search (3-10 words) likely to surface forum threads, community posts or ' +
+    'discussions where real people express the need, problem, complaint or request that was described.\n' +
+    'Vary the angles (stating the problem, asking for recommendations, complaining about alternatives).\n' +
+    'Do not use quotes or the site: operator unless the description explicitly asks for specific sites.\n' +
+    'Write the queries in the language most likely used by the people posting (default: English).\n\n' +
+    'Description: ' + pershkrim;
+  const r = await fetchMeKohe('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + OPENAI_KEY },
+    body: JSON.stringify({ model: OPENAI_MODELI, messages: [{ role: 'user', content: prompt }] })
+  }, 60000);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error('OpenAI: ' + ((data.error && data.error.message) || r.status));
+  const tekst = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
+  const lista = nxirrListeJSON(tekst);
+  if (!lista) throw new Error('AI nuk ktheu format te vlefshem. Provo perseri, ose shkruaj kerkesat vete.');
+  const pastro = Array.from(new Set(lista.filter(x => typeof x === 'string').map(x => x.trim()).filter(Boolean)));
+  if (!pastro.length) throw new Error('AI nuk ktheu asnje kerkese. Provo perseri me pershkrim me te qarte.');
+  return pastro.slice(0, numri);
+}
+
+async function kerkoSerper(q, koha) {
+  if (!SERPER_KEY) throw new Error('SERPER_API_KEY mungon te Railway → Variables.');
+  const trupi = { q, num: 10 };
+  if (KOHET_E_LEJUARA.includes(koha)) trupi.tbs = 'qdr:' + koha;
+  const r = await fetchMeKohe('https://google.serper.dev/search', {
+    method: 'POST',
+    headers: { 'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify(trupi)
+  }, 30000);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error('Serper: ' + (data.message || r.status));
+  return data;
+}
+
 app.get('/', (req, res) => {
   res.type('html').send(`<!DOCTYPE html>
 <html lang="sq"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -186,6 +249,7 @@ app.get('/', (req, res) => {
   .row{ display:flex; gap:10px; margin-bottom:12px; flex-wrap:wrap; }
   input, select{ padding:10px 12px; border:1px solid #2a313c; border-radius:8px; background:#141b26; color:#e6edf3; font-size:14px; }
   input[type=text]{ flex:1; min-width:240px; }
+  textarea{ width:100%; box-sizing:border-box; padding:10px 12px; border:1px solid #2a313c; border-radius:8px; background:#141b26; color:#e6edf3; font:14px/1.5 system-ui,sans-serif; resize:vertical; }
   button{ padding:10px 20px; border-radius:8px; border:none; background:#3b6ef0; color:#fff; font-weight:600; cursor:pointer; font-size:14px; }
   button:disabled{ opacity:.5; cursor:default; }
   table{ width:100%; border-collapse:collapse; margin-top:16px; }
@@ -204,6 +268,7 @@ app.get('/', (req, res) => {
     <div class="tab aktiv" id="tabGjenerim" onclick="ndryshoTab('gjenerim')">Gjenerim</div>
     <div class="tab" id="tabRuajtura" onclick="ndryshoTab('ruajtura')">Bizneset e ruajtura</div>
     <div class="tab" id="tabShkarko" onclick="ndryshoTab('shkarko')">Shkarko</div>
+    <div class="tab" id="tabBisedat" onclick="ndryshoTab('bisedat')">Bisedat</div>
   </div>
 
   <div class="sec-panel aktiv" id="panelGjenerim">
@@ -250,6 +315,31 @@ app.get('/', (req, res) => {
     </div>
     <div id="statusShkarko"></div>
   </div>
+
+  <div class="sec-panel" id="panelBisedat">
+    <p class="mut">Pershkruaj cfare kerkon: nje propozim, shqetesim ose kerkese per nje sherbim si yti. AI e kthen ne kerkesa Google, ti i shikon ose i ndryshon, dhe pastaj dergohen te Serper. Ketu shfaqet vetem cfare kthen Serper, pa filtrim ende.</p>
+    <p class="mut" style="margin-bottom:6px;">1. Pershkrimi: cfare kerkon</p>
+    <textarea id="bisPer" rows="3" placeholder="p.sh. biznese te vogla qe ankohen se reklamat jane te shtrenjta dhe s'kane klientet, ose pyesin si t'i gjejne perdoruesit e pare"></textarea>
+    <div class="row" style="margin-top:8px;">
+      <button onclick="bisFormulo(this)">Formulo kerkesat me AI</button>
+      <span id="bisFormStat" style="font-size:13px; color:#8b949e; align-self:center;"></span>
+    </div>
+    <p class="mut" style="margin:16px 0 6px;">2. Kerkesat qe dergohen te Serper (nje per rresht, maksimumi 8; mund t'i ndryshosh ose t'i shkruash vete)</p>
+    <textarea id="bisKer" rows="5" placeholder="Nje kerkese per rresht"></textarea>
+    <div class="row" style="margin-top:8px;">
+      <select id="bisKoha">
+        <option value="d">24 oret e fundit</option>
+        <option value="w" selected>1 jave</option>
+        <option value="m">1 muaj</option>
+        <option value="">Cdo kohe</option>
+      </select>
+      <button onclick="bisKerko(this)">Kerko te Serper</button>
+      <span id="bisKerStat" style="font-size:13px; color:#8b949e; align-self:center;"></span>
+    </div>
+    <p class="mut" style="margin-bottom:16px;">Cdo rresht eshte 1 kerkese, rreth 1 kredit Serper (10 rezultate).</p>
+    <div id="bisRez"></div>
+  </div>
+
 </div>
 <script>
 var pollTimer = null;
@@ -257,11 +347,75 @@ function ndryshoTab(cila){
   document.getElementById('tabGjenerim').className = cila === 'gjenerim' ? 'tab aktiv' : 'tab';
   document.getElementById('tabRuajtura').className = cila === 'ruajtura' ? 'tab aktiv' : 'tab';
   document.getElementById('tabShkarko').className = cila === 'shkarko' ? 'tab aktiv' : 'tab';
+  document.getElementById('tabBisedat').className = cila === 'bisedat' ? 'tab aktiv' : 'tab';
   document.getElementById('panelGjenerim').className = cila === 'gjenerim' ? 'sec-panel aktiv' : 'sec-panel';
   document.getElementById('panelRuajtura').className = cila === 'ruajtura' ? 'sec-panel aktiv' : 'sec-panel';
   document.getElementById('panelShkarko').className = cila === 'shkarko' ? 'sec-panel aktiv' : 'sec-panel';
+  document.getElementById('panelBisedat').className = cila === 'bisedat' ? 'sec-panel aktiv' : 'sec-panel';
   if(cila === 'ruajtura'){ ngarkoKategorite('filterKategoria'); shikoTeGjitha(); }
   if(cila === 'shkarko'){ ngarkoKategorite('shkarkoKategoria'); }
+}
+function bisNje(stil, tekst){ var e = document.createElement('div'); e.style.cssText = stil; e.textContent = tekst; return e; }
+async function bisFormulo(btn){
+  var stat = document.getElementById('bisFormStat');
+  var per = document.getElementById('bisPer').value.trim();
+  if(!per){ stat.textContent = 'Shkruaj fillimisht pershkrimin.'; return; }
+  btn.disabled = true; stat.textContent = 'AI po formulon...';
+  try{
+    var r = await fetch('/api/bisedat/formulo', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ pershkrim: per, numri: 4 }) });
+    var d = await r.json();
+    if(d.error){ stat.textContent = 'Gabim: ' + d.error; }
+    else {
+      document.getElementById('bisKer').value = d.kerkesat.join(String.fromCharCode(10));
+      stat.textContent = d.kerkesat.length + ' kerkesa u formuluan. Shikoji dhe ndryshoji nese duhet.';
+    }
+  }catch(e){ stat.textContent = 'Gabim rrjeti: ' + e.message; }
+  btn.disabled = false;
+}
+async function bisKerko(btn){
+  var stat = document.getElementById('bisKerStat'), rez = document.getElementById('bisRez');
+  var kerkesat = document.getElementById('bisKer').value.split(String.fromCharCode(10)).map(function(x){ return x.trim(); }).filter(Boolean);
+  if(!kerkesat.length){ stat.textContent = 'Shkruaj te pakten 1 kerkese.'; return; }
+  if(kerkesat.length > 8){ stat.textContent = 'Maksimumi 8 kerkesa per here.'; return; }
+  btn.disabled = true; stat.textContent = 'Po kerkoj...'; rez.innerHTML = '';
+  try{
+    var r = await fetch('/api/bisedat/kerko', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ kerkesat: kerkesat, koha: document.getElementById('bisKoha').value }) });
+    var d = await r.json();
+    if(d.error){ stat.textContent = 'Gabim: ' + d.error; }
+    else {
+      var ok = d.rezultatet.filter(function(x){ return x.ok; }).length;
+      stat.textContent = d.rezultatet.length + ' kerkesa derguar, ' + ok + ' me sukses (rreth ' + ok + ' kredite).';
+      bisShfaq(d.rezultatet);
+    }
+  }catch(e){ stat.textContent = 'Gabim rrjeti: ' + e.message; }
+  btn.disabled = false;
+}
+function bisShfaq(lista){
+  var rez = document.getElementById('bisRez'); rez.innerHTML = '';
+  lista.forEach(function(x){
+    var kuti = document.createElement('div');
+    kuti.style.cssText = 'border:1px solid #2a313c;border-radius:10px;margin-bottom:16px;overflow:hidden;';
+    kuti.appendChild(bisNje('padding:10px 14px;background:#161b22;font-size:13px;', 'Kerkesa: ' + x.q + (x.ok ? '  |  ' + x.organic.length + ' rezultate' : '')));
+    if(!x.ok){ kuti.appendChild(bisNje('padding:12px 14px;color:#e5484d;font-size:13px;', 'Gabim: ' + x.error)); rez.appendChild(kuti); return; }
+    if(!x.organic.length){ kuti.appendChild(bisNje('padding:12px 14px;font-size:13px;color:#8b949e;', 'Pa rezultate per kete kerkese.')); }
+    x.organic.forEach(function(o){
+      var rr = document.createElement('div'); rr.style.cssText = 'padding:10px 14px;border-top:1px solid #1c2230;';
+      var a = document.createElement('a'); a.textContent = o.titulli || o.linku || '(pa titull)';
+      var lnk = o.linku || '';
+      if(lnk.indexOf('http://') === 0 || lnk.indexOf('https://') === 0){ a.href = lnk; a.target = '_blank'; a.rel = 'noopener noreferrer'; }
+      a.style.cssText = 'font-weight:600;font-size:14px;text-decoration:none;';
+      rr.appendChild(a);
+      rr.appendChild(bisNje('font-size:12px;color:#8b949e;margin:2px 0 4px;', [o.faqja, o.data].filter(Boolean).join('  |  ')));
+      rr.appendChild(bisNje('font-size:13px;color:#c9d1d9;line-height:1.45;', o.fragmenti || ''));
+      kuti.appendChild(rr);
+    });
+    var det = document.createElement('details'); det.style.cssText = 'border-top:1px solid #1c2230;padding:8px 14px;';
+    var sum = document.createElement('summary'); sum.textContent = 'JSON i plote nga Serper (per te pare te gjitha fushat)'; sum.style.cssText = 'cursor:pointer;font-size:12px;color:#8b949e;';
+    var pre = document.createElement('pre'); pre.style.cssText = 'max-height:320px;overflow:auto;font-size:11px;background:#0e1116;padding:10px;border-radius:6px;margin-top:8px;';
+    pre.textContent = JSON.stringify(x.raw, null, 2);
+    det.appendChild(sum); det.appendChild(pre); kuti.appendChild(det);
+    rez.appendChild(kuti);
+  });
 }
 function tekstArsyeja(a){
   if(a === 'pa_kompani') return 'nuk u gjet kompania te Generect';
@@ -588,6 +742,38 @@ app.get('/api/te-gjitha', async (req, res) => {
     }
     res.json({ rows: r.rows });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ---- BISEDAT ----
+app.post('/api/bisedat/formulo', async (req, res) => {
+  const b = req.body || {};
+  const pershkrim = String(b.pershkrim || '').trim();
+  if (!pershkrim) return res.status(400).json({ error: 'Shkruaj nje pershkrim: cfare kerkon.' });
+  if (pershkrim.length > 1500) return res.status(400).json({ error: 'Pershkrimi eshte shume i gjate (maks. 1500 shkronja).' });
+  const numri = Math.min(8, Math.max(1, parseInt(b.numri, 10) || 4));
+  try { res.json({ ok: true, kerkesat: await formuloKerkesatMeAI(pershkrim, numri) }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/bisedat/kerko', async (req, res) => {
+  const b = req.body || {};
+  const kerkesat = (Array.isArray(b.kerkesat) ? b.kerkesat : [])
+    .filter(x => typeof x === 'string').map(x => x.trim()).filter(Boolean)
+    .map(x => x.slice(0, 300)).slice(0, 8);
+  if (!kerkesat.length) return res.status(400).json({ error: 'Shkruaj te pakten 1 kerkese.' });
+  if (!SERPER_KEY) return res.status(400).json({ error: 'SERPER_API_KEY mungon te Railway → Variables.' });
+  const koha = KOHET_E_LEJUARA.includes(b.koha) ? b.koha : '';
+  const rezultatet = await Promise.all(kerkesat.map(async q => {
+    try {
+      const raw = await kerkoSerper(q, koha);
+      const organic = (raw.organic || []).map(o => {
+        let faqja = ''; try { faqja = new URL(o.link).hostname.replace(/^www\./, ''); } catch (e) {}
+        return { pozicioni: o.position, titulli: o.title, linku: o.link, fragmenti: o.snippet, data: o.date || '', faqja };
+      });
+      return { q, ok: true, organic, raw };
+    } catch (e) { return { q, ok: false, error: e.message, organic: [] }; }
+  }));
+  res.json({ ok: true, koha, rezultatet });
 });
 
 const PORT = process.env.PORT || 3000;
