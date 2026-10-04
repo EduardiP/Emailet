@@ -33,7 +33,7 @@ pool.query(`CREATE TABLE IF NOT EXISTS kompani_pare (
   ADD COLUMN IF NOT EXISTS shteti TEXT, ADD COLUMN IF NOT EXISTS qyteti TEXT, ADD COLUMN IF NOT EXISTS linkedin TEXT, ADD COLUMN IF NOT EXISTS twitter TEXT,
   ADD COLUMN IF NOT EXISTS fshih BOOLEAN DEFAULT true, ADD COLUMN IF NOT EXISTS email TEXT, ADD COLUMN IF NOT EXISTS email_lloji TEXT,
   ADD COLUMN IF NOT EXISTS email_mx BOOLEAN, ADD COLUMN IF NOT EXISTS email_burimi TEXT,
-  ADD COLUMN IF NOT EXISTS email_gjendja TEXT DEFAULT 'pa-kerkuar', ADD COLUMN IF NOT EXISTS email_at TIMESTAMPTZ`))
+  ADD COLUMN IF NOT EXISTS email_gjendja TEXT DEFAULT 'pa-kerkuar', ADD COLUMN IF NOT EXISTS email_at TIMESTAMPTZ, ADD COLUMN IF NOT EXISTS kategoria TEXT`))
   .catch(e => console.error('migrim kompani_pare:', e.message));
 // Njoftimet e Google Alerts (nga feed-et RSS), per tab-in "Alerte".
 pool.query(`CREATE TABLE IF NOT EXISTS alerte_rezultate (
@@ -378,7 +378,7 @@ async function merrDomainetePara() {
 
 // Ruan kompanite me te dhenat e plota. Nese ekzistojne (p.sh. ruajtur me pare me email), te dhenat e vjetra MBETEN dhe
 // plotesohen vetem fushat bosh; "fshih" behet perseri true. Kthen gjendjen e email-it per secilen dhe e shton te objekti.
-async function ruajKompanite(kompanite) {
+async function ruajKompanite(kompanite, kategoria) {
   const A = { d: [], emri: [], web: [], viti: [], pun: [], shteti: [], qyteti: [], li: [], tw: [] }, pare = new Set(), objekte = {};
   for (const k of kompanite) {
     const d = normalizoDomain(k.domain);
@@ -389,14 +389,14 @@ async function ruajKompanite(kompanite) {
   }
   if (!A.d.length) return 0;
   const r = await pool.query(
-    'INSERT INTO kompani_pare (domain, emri, website, viti, punonjes, shteti, qyteti, linkedin, twitter) ' +
-    'SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::int[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[]) ' +
+    'INSERT INTO kompani_pare (domain, emri, website, viti, punonjes, shteti, qyteti, linkedin, twitter, kategoria) ' +
+    'SELECT u.d, u.e, u.w, u.v, u.p, u.s, u.q, u.l, u.t, $10::text FROM UNNEST($1::text[], $2::text[], $3::text[], $4::int[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[]) AS u(d, e, w, v, p, s, q, l, t) ' +
     'ON CONFLICT (domain) DO UPDATE SET emri = COALESCE(NULLIF(kompani_pare.emri, \'\'), EXCLUDED.emri), website = COALESCE(kompani_pare.website, EXCLUDED.website), ' +
     'viti = COALESCE(kompani_pare.viti, EXCLUDED.viti), punonjes = COALESCE(kompani_pare.punonjes, EXCLUDED.punonjes), shteti = COALESCE(kompani_pare.shteti, EXCLUDED.shteti), ' +
-    'qyteti = COALESCE(kompani_pare.qyteti, EXCLUDED.qyteti), linkedin = COALESCE(kompani_pare.linkedin, EXCLUDED.linkedin), twitter = COALESCE(kompani_pare.twitter, EXCLUDED.twitter), fshih = true ' +
-    'RETURNING domain, email, email_lloji, email_mx, email_burimi, email_gjendja',
-    [A.d, A.emri, A.web, A.viti, A.pun, A.shteti, A.qyteti, A.li, A.tw]);
-  (r.rows || []).forEach(x => { const k = objekte[normalizoDomain(x.domain)]; if (k) Object.assign(k, { email: x.email || null, email_lloji: x.email_lloji || null, email_mx: x.email_mx == null ? null : x.email_mx, email_burimi: x.email_burimi || null, email_gjendja: x.email_gjendja || null }); });
+    'qyteti = COALESCE(kompani_pare.qyteti, EXCLUDED.qyteti), linkedin = COALESCE(kompani_pare.linkedin, EXCLUDED.linkedin), twitter = COALESCE(kompani_pare.twitter, EXCLUDED.twitter), kategoria = COALESCE(kompani_pare.kategoria, EXCLUDED.kategoria), fshih = true ' +
+    'RETURNING domain, email, email_lloji, email_mx, email_burimi, email_gjendja, kategoria',
+    [A.d, A.emri, A.web, A.viti, A.pun, A.shteti, A.qyteti, A.li, A.tw, kategoria || null]);
+  (r.rows || []).forEach(x => { const k = objekte[normalizoDomain(x.domain)]; if (k) Object.assign(k, { email: x.email || null, email_lloji: x.email_lloji || null, email_mx: x.email_mx == null ? null : x.email_mx, email_burimi: x.email_burimi || null, email_gjendja: x.email_gjendja || null, kategoria: x.kategoria || null }); });
   return A.d.length;
 }
 
@@ -905,6 +905,7 @@ app.get('/', (req, res) => {
       <div class="fusha"><span>Themeluar nga viti (perfshire)</span><input type="number" id="kompViti" value="2025" min="1990" max="2030" style="width:150px;" oninput="kompVleresim()" /></div>
       <div class="fusha"><span>Industria (opsionale)</span><input type="text" id="kompIndustria" value="Software Development" style="width:230px; flex:none; min-width:0;" oninput="kompVleresim()" /></div>
       <div class="fusha"><span>Fjale kyce / pershkrim (opsionale)</span><input type="text" id="kompPershkrim" placeholder="p.sh. B2B SaaS per ekipe marketingu" style="width:300px; flex:none; min-width:0;" /></div>
+      <div class="fusha"><span>Emri i kategorise (ruhet me kompanite)</span><input type="text" id="kompKategoria" placeholder="p.sh. payroll-software" maxlength="60" style="width:230px; flex:none; min-width:0;" /></div>
       <div class="fusha"><span>Shteti (opsionale)</span><input type="text" id="kompShteti" placeholder="p.sh. USA" style="width:120px; flex:none; min-width:0;" /></div>
       <div class="fusha"><span>Maks. punonjes (opsionale)</span><input type="number" id="kompMaks" placeholder="p.sh. 50" min="1" style="width:150px;" oninput="kompVleresim()" /></div>
       <div class="fusha"><span>Sa rezultate</span><select id="kompLimit" onchange="kompVleresim()"><option value="5">5</option><option value="10" selected>10</option><option value="20">20</option><option value="50">50</option></select></div>
@@ -1073,6 +1074,7 @@ async function kompKerko(btn){
     viti: document.getElementById('kompViti').value,
     industria: document.getElementById('kompIndustria').value.trim(),
     pershkrim: document.getElementById('kompPershkrim').value.trim(),
+    kategoria: document.getElementById('kompKategoria').value.trim(),
     shteti: document.getElementById('kompShteti').value.trim(),
     maksPunonjes: document.getElementById('kompMaks').value,
     limit: document.getElementById('kompLimit').value,
@@ -1156,7 +1158,7 @@ async function kompGjejTeGjitha(btn){
 function kompTabela(rreshta){
   var tbl = document.createElement('table');
   var thead = document.createElement('thead'), hr = document.createElement('tr');
-  ['Emri', 'Domain', 'Viti', 'Punonjes', 'Shteti', 'Email', 'LinkedIn', 'X'].forEach(function(t){ var th = document.createElement('th'); th.textContent = t; hr.appendChild(th); });
+  ['Emri', 'Domain', 'Viti', 'Punonjes', 'Shteti', 'Email', 'LinkedIn', 'X', 'Kategoria'].forEach(function(t){ var th = document.createElement('th'); th.textContent = t; hr.appendChild(th); });
   thead.appendChild(hr); tbl.appendChild(thead);
   var tbody = document.createElement('tbody');
   rreshta.forEach(function(k){
@@ -1175,6 +1177,7 @@ function kompTabela(rreshta){
     tr.appendChild(tdE);
     kompCel(tr, k.linkedin ? 'LinkedIn' : '', k.linkedin);
     kompCel(tr, k.twitter ? 'X' : '', k.twitter);
+    kompCel(tr, k.kategoria || '', null);
     tbody.appendChild(tr);
   });
   tbl.appendChild(tbody);
@@ -1212,7 +1215,7 @@ function kompShfaq(d){
   var permbledhje = document.createElement('div');
   permbledhje.style.cssText = 'font-size:13px; color:#3fb950; font-weight:600; margin-bottom:6px;';
   permbledhje.textContent = d.kompanite.length + ' rezultate' + (d.total_count != null ? (' nga ' + d.total_count + ' qe perputhen gjithsej') : '') +
-    ' | kredite te shpenzuara: ' + (d.kredite_perdorur != null ? d.kredite_perdorur : 'e panjohur') + ' | renditja: ' + d.renditja + (d.te_pare ? ' | u perjashtuan ' + d.te_pare + ' te pare me pare' : '');
+    ' | kredite te shpenzuara: ' + (d.kredite_perdorur != null ? d.kredite_perdorur : 'e panjohur') + ' | renditja: ' + d.renditja + (d.te_pare ? ' | u perjashtuan ' + d.te_pare + ' te pare me pare' : '') + (d.kategoria ? ' | kategoria: ' + d.kategoria : '');
   rez.appendChild(permbledhje);
   if(!d.kompanite.length){
     var bosh = document.createElement('div'); bosh.style.cssText = 'font-size:13px; color:#8b949e;';
@@ -1681,6 +1684,7 @@ app.post('/api/kompani-reja/kerko', async (req, res) => {
   const industria = String(b.industria || '').trim().slice(0, 100);
   const shteti = String(b.shteti || '').trim().slice(0, 60);
   const pershkrim = String(b.pershkrim || '').trim().slice(0, 200);
+  const kategoria = String(b.kategoria || '').replace(/[<>\u0000-\u001f]/g, '').replace(/\s+/g, ' ').trim().slice(0, 60) || null; // emri i grupit, ruhet me kompanite
   const maks = parseInt(b.maksPunonjes, 10);
   const maksPunonjes = Number.isInteger(maks) && maks > 0 && maks <= 1000000 ? maks : null;
   const limit = Math.min(50, Math.max(1, parseInt(b.limit, 10) || 10)); // kufi i fortë 50, per te mbrojtur kreditet
@@ -1696,12 +1700,12 @@ app.post('/api/kompani-reja/kerko', async (req, res) => {
     const { r, perdorur } = await kerkoKompani(trupiBaze);
     if (!r.ok) return res.status([400, 401, 403, 429].includes(r.status) ? r.status : 502).json({ error: mesazhGabimiCrustdata(r), kredite_perdorur: r.kredite });
     const kompanite = (Array.isArray(r.data.companies) ? r.data.companies : []).map(sheshoKompanine);
-    try { await ruajKompanite(kompanite); } // ruhen gjithmone me te dhenat e plota (qe perjashtimi dhe "Te gjitha" te funksionojne)
+    try { await ruajKompanite(kompanite, kategoria); } // ruhen gjithmone me te dhenat e plota (qe perjashtimi dhe "Te gjitha" te funksionojne)
     catch (e) { paralajmerim = (paralajmerim ? paralajmerim + ' ' : '') + 'Historiku nuk u ruajt (' + e.message + ').'; }
     res.json({
       ok: true, kerkesa: kerkesePerShfaqje(perdorur.trupi), renditja: perdorur.sorts, kredite_perdorur: r.kredite,
       total_count: r.data.total_count == null ? null : r.data.total_count, te_pare: fshihTePara ? perjashto.length : null,
-      paralajmerim, kompanite, raw: r.data
+      paralajmerim, kategoria, kompanite, raw: r.data
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -1723,7 +1727,7 @@ app.get('/api/kompani-reja/ruajtura', async (req, res) => {
     const offset = Math.max(0, parseInt(q.offset, 10) || 0);
     const kushti = filtri === 'me-email' ? 'WHERE email IS NOT NULL' : filtri === 'pa-email' ? 'WHERE email IS NULL' : '';
     const rows = (await pool.query(
-      'SELECT domain, emri, website, viti, punonjes, shteti, qyteti, linkedin, twitter, email, email_lloji, email_mx, email_burimi, email_gjendja, gjetur_at ' +
+      'SELECT domain, emri, website, viti, punonjes, shteti, qyteti, linkedin, twitter, email, email_lloji, email_mx, email_burimi, email_gjendja, kategoria, gjetur_at ' +
       'FROM kompani_pare ' + kushti + ' ORDER BY gjetur_at DESC, domain LIMIT $1 OFFSET $2', [limit, offset])).rows;
     const n = (await pool.query('SELECT COUNT(*)::int AS gjithsej, COUNT(email)::int AS me_email FROM kompani_pare')).rows[0] || {};
     const gjithsej = n.gjithsej || 0, meEmail = n.me_email || 0;
