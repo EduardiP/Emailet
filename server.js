@@ -191,36 +191,57 @@ function nxirrListeJSON(tekst) {
   catch (e) { return null; }
 }
 
-// AI-ja e shenon frazen kyce me <<...>> (pa thonjeza, qe JSON-i te mos prishet).
-// Ketu kthehet ne thonjeza te sakta, qe Google te detyrohet ta permbaje frazen.
+// AI-ja e shenon frazat kyce me <<...>> (pa thonjeza, qe JSON-i te mos prishet).
+// Ketu kthehen ne thonjeza te sakta, qe Google te detyrohet t'i permbaje.
 function kthejFrazatNeThonjeza(q) {
   return q.replace(/<<\s*([^<>]+?)\s*>>/g, '"$1"').replace(/\s+/g, ' ').trim();
 }
 
+// Mbrojtje ne kod (modeli i vogel nuk i ndjek gjithmone rregullat e prompt-it):
+// 1) maksimumi 2 fraza me thonjeza per kerkese; me shume, Google kthen shume pak rezultate.
+function limitoThonjezat(q, maks) {
+  let i = 0;
+  return q.replace(/"([^"]*)"/g, (m, fraza) => (++i <= maks ? m : fraza));
+}
+// 2) maksimumi 8 fjale; kerkesat e gjata japin pak rezultate. Nje fraze brenda thonjezave nuk ndahet kurre.
+function shkurtoKerkesen(q, maksFjale) {
+  const njesite = q.match(/"[^"]*"|\S+/g) || [];
+  const dalja = [];
+  let fjale = 0;
+  for (const n of njesite) {
+    const nr = n.replace(/"/g, ' ').trim().split(/\s+/).filter(Boolean).length || 1;
+    if (dalja.length && fjale + nr > maksFjale) break;
+    dalja.push(n); fjale += nr;
+  }
+  return dalja.join(' ');
+}
+function pergatitKerkesen(q) { return shkurtoKerkesen(limitoThonjezat(kthejFrazatNeThonjeza(q), 2), 8); }
+
 const SHEMBULL_AI = JSON.stringify([
-  '<<delivery app>> commission restaurant owner frustrated -agency -agencies',
-  'anyone <<delivery apps>> fees eating margins restaurant -agency -agencies',
-  '<<commission>> delivery platform looking for alternative restaurant -agency -agencies'
+  '<<delivery apps>> fees restaurant owner <<any advice>>',
+  'how do I lower <<delivery app>> commission restaurant',
+  '<<delivery apps>> eating my margins restaurant',
+  'restaurant owner dropping <<delivery apps>> worth it'
 ]);
 
 async function formuloKerkesatMeAI(pershkrim, numri) {
   if (!OPENAI_KEY) throw new Error('OPENAI_API_KEY mungon te Railway → Variables.');
   const prompt =
     'You turn a business owner\'s plain-language description into Google search queries that find real people\'s posts ' +
-    'in forums and communities (not articles).\n\n' +
+    'in forums and communities (not articles, not marketing copy).\n\n' +
     'Rules:\n' +
-    '1. Identify the 1-2 core concepts of the description: the exact topic words a person would use when posting about it.\n' +
-    '2. EVERY query must contain at least one core concept wrapped in double angle brackets, like <<delivery app>>. ' +
-    'Never use quotation marks. The brackets are turned into an exact-match phrase, so Google must include it.\n' +
-    '3. Combine that phrase with plain words people use when posting: looking for, anyone, recommend, frustrated, ' +
-    'struggling, how do you, does anyone know.\n' +
-    '4. Do NOT write article-style queries. Avoid the words: best, top, guide, tips, strategies, tools list, 2026.\n' +
-    '5. Unless the description is about agencies, end every query with: -agency -agencies\n' +
-    '6. Each query has 3-10 words before the operators. Vary the angles (stating the problem, asking for recommendations, ' +
-    'looking for partners, complaining about alternatives).\n' +
-    '7. Never use the site: operator.\n' +
+    '1. Write the way a person writes when asking for help in first person: "I", "my", "how do I", "any advice", ' +
+    '"anyone", "struggling". Marketers write sales copy ("costs keep rising", "frustrated that your..."): never write like that.\n' +
+    '2. Every query includes the audience words from the description (for example SaaS, founder, startup, developer). ' +
+    'Use the most specific audience in the description. Never broaden it (do not turn SaaS founders into small business owners).\n' +
+    '3. Every query has at most 8 words in total.\n' +
+    '4. Wrap 1 or 2 short key phrases (2-3 words each) in double angle brackets, like <<first users>>. ' +
+    'Never wrap more than 2 phrases. Never use quotation marks. The brackets become exact-match phrases.\n' +
+    '5. Do NOT write article-style queries. Avoid the words: best, top, guide, tips, strategies, tools, 2026.\n' +
+    '6. Do not use operators (no site:, no minus signs).\n' +
+    '7. Vary the angles: stating the problem, asking for help, looking for alternatives, sharing a failed attempt.\n' +
     '8. Write the queries in the language most likely used by the people posting (default: English).\n\n' +
-    'Example. Description: restaurant owners complaining about delivery app commissions\n' +
+    'Example. Description: restaurant owners frustrated with delivery app commissions\n' +
     'Output: ' + SHEMBULL_AI + '\n\n' +
     'Return ONLY a JSON array of ' + numri + ' strings: no prose, no code fences.\n\n' +
     'Description: ' + pershkrim;
@@ -234,7 +255,7 @@ async function formuloKerkesatMeAI(pershkrim, numri) {
   const tekst = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
   const lista = nxirrListeJSON(tekst);
   if (!lista) throw new Error('AI nuk ktheu format te vlefshem. Provo perseri, ose shkruaj kerkesat vete.');
-  const pastro = Array.from(new Set(lista.filter(x => typeof x === 'string').map(kthejFrazatNeThonjeza).filter(Boolean)));
+  const pastro = Array.from(new Set(lista.filter(x => typeof x === 'string').map(pergatitKerkesen).filter(Boolean)));
   if (!pastro.length) throw new Error('AI nuk ktheu asnje kerkese. Provo perseri me pershkrim me te qarte.');
   return pastro.slice(0, numri);
 }
