@@ -1288,7 +1288,7 @@ function alerteShfaq(d){
   }
   var tbl = document.createElement('table');
   var thead = document.createElement('thead'), hr = document.createElement('tr');
-  ['Titulli', 'Burimi', 'Copa e tekstit', 'Data', 'Statusi'].forEach(function(t){ var th = document.createElement('th'); th.textContent = t; hr.appendChild(th); });
+  ['Titulli', 'Burimi', 'Alerti', 'Copa e tekstit', 'Data', 'Statusi'].forEach(function(t){ var th = document.createElement('th'); th.textContent = t; hr.appendChild(th); });
   thead.appendChild(hr); tbl.appendChild(thead);
   var tbody = document.createElement('tbody');
   d.rows.forEach(function(k){
@@ -1298,7 +1298,11 @@ function alerteShfaq(d){
       var a = document.createElement('a'); a.textContent = k.titulli || k.url; a.href = k.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; tdT.appendChild(a);
     } else { tdT.textContent = k.titulli || ''; }
     tr.appendChild(tdT);
-    [k.burimi || '', (k.fragmenti || '').slice(0, 220), String(k.publikuar || k.gjetur_at || '').slice(0, 10)].forEach(function(t){
+    var tdB = document.createElement('td'); tdB.textContent = k.burimi || ''; tr.appendChild(tdB);
+    var tdA = document.createElement('td'), alerti = k.alerti || '';
+    tdA.textContent = alerti.length > 38 ? (alerti.slice(0, 38) + '...') : alerti; tdA.title = alerti; tdA.style.cssText = 'font-size:12px; color:#8b949e;';
+    tr.appendChild(tdA);
+    [(k.fragmenti || '').slice(0, 220), String(k.publikuar || k.gjetur_at || '').slice(0, 10)].forEach(function(t){
       var td = document.createElement('td'); td.textContent = t; tr.appendChild(td);
     });
     var tdS = document.createElement('td'), sel = document.createElement('select');
@@ -1402,7 +1406,7 @@ async function shikoTeGjitha(){
   var kategoria = document.getElementById('filterKategoria').value;
   status2.textContent = 'Duke ngarkuar...'; rez2Body.innerHTML = '';
   try{
-    var r = await fetch('/api/te-gjitha' + (kategoria ? ('?kategoria=' + encodeURIComponent(kategoria)) : ''));
+    var r = await fetch('/api/te-gjitha?burimi=exa' + (kategoria ? ('&kategoria=' + encodeURIComponent(kategoria)) : ''));
     var d = await r.json();
     status2.textContent = '';
     count2.textContent = d.rows.length + ' total.';
@@ -1625,16 +1629,34 @@ app.post('/api/shto-manualisht', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Perdoret nga admini i PhronexusAI (sinkronizimi i kontakteve) dhe nga tab-i "Ruajtura" (me ?burimi=exa, qe te mbetet si ishte).
+// Pa ?burimi=exa kthen edhe kompanite e Crustdata qe kane email (jo me MX te pavlefshem), me kategorine "Crustdata: <emri>";
+// keshtu admini i PhronexusAI i ndan ne seksione pa u ndryshuar kodi i tij i importit.
+const KATEGORI_CRUSTDATA = 'Crustdata: ';
 app.get('/api/te-gjitha', async (req, res) => {
   try {
-    const { kategoria } = req.query;
-    let r;
-    if (kategoria) {
-      r = await pool.query('SELECT email, email_statusi, domain, emri, kategoria FROM bizneset_gjetur WHERE kategoria=$1 ORDER BY gjetur_at DESC', [kategoria]);
-    } else {
-      r = await pool.query('SELECT email, email_statusi, domain, emri, kategoria FROM bizneset_gjetur ORDER BY gjetur_at DESC');
+    const kategoria = req.query.kategoria ? String(req.query.kategoria) : '';
+    const vetemExa = req.query.burimi === 'exa';
+    const eCrust = kategoria.startsWith(KATEGORI_CRUSTDATA);
+    let rows = [];
+    if (!eCrust) {
+      const r = kategoria
+        ? await pool.query('SELECT email, email_statusi, domain, emri, kategoria FROM bizneset_gjetur WHERE kategoria=$1 ORDER BY gjetur_at DESC', [kategoria])
+        : await pool.query('SELECT email, email_statusi, domain, emri, kategoria FROM bizneset_gjetur ORDER BY gjetur_at DESC');
+      rows = r.rows;
     }
-    res.json({ rows: r.rows });
+    if (!vetemExa && (eCrust || !kategoria)) {
+      try {
+        const emriKat = eCrust ? kategoria.slice(KATEGORI_CRUSTDATA.length) : null;
+        let sql = 'SELECT email, domain, emri, kategoria FROM kompani_pare WHERE email IS NOT NULL AND email_mx IS DISTINCT FROM false';
+        const p = [];
+        if (emriKat === 'pa-kategori') sql += " AND (kategoria IS NULL OR kategoria = '')";
+        else if (emriKat) { p.push(emriKat); sql += ' AND kategoria = $1'; }
+        const r = await pool.query(sql + ' ORDER BY gjetur_at DESC', p);
+        rows = rows.concat(r.rows.map(x => ({ email: x.email, email_statusi: 'nga-faqja', domain: x.domain, emri: x.emri, kategoria: KATEGORI_CRUSTDATA + (x.kategoria || 'pa-kategori') })));
+      } catch (e) { console.error('te-gjitha: pjesa e Crustdata nuk u lexua (Exa vazhdon):', e.message); }
+    }
+    res.json({ rows });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
