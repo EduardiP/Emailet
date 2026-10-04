@@ -28,7 +28,13 @@ pool.query(`CREATE TABLE IF NOT EXISTS kompani_pare (
   domain TEXT PRIMARY KEY,
   emri TEXT,
   gjetur_at TIMESTAMPTZ DEFAULT now()
-)`).catch(e => console.error('migrim kompani_pare:', e.message));
+)`).then(() => pool.query(`ALTER TABLE kompani_pare
+  ADD COLUMN IF NOT EXISTS website TEXT, ADD COLUMN IF NOT EXISTS viti INTEGER, ADD COLUMN IF NOT EXISTS punonjes TEXT,
+  ADD COLUMN IF NOT EXISTS shteti TEXT, ADD COLUMN IF NOT EXISTS qyteti TEXT, ADD COLUMN IF NOT EXISTS linkedin TEXT, ADD COLUMN IF NOT EXISTS twitter TEXT,
+  ADD COLUMN IF NOT EXISTS fshih BOOLEAN DEFAULT true, ADD COLUMN IF NOT EXISTS email TEXT, ADD COLUMN IF NOT EXISTS email_lloji TEXT,
+  ADD COLUMN IF NOT EXISTS email_mx BOOLEAN, ADD COLUMN IF NOT EXISTS email_burimi TEXT,
+  ADD COLUMN IF NOT EXISTS email_gjendja TEXT DEFAULT 'pa-kerkuar', ADD COLUMN IF NOT EXISTS email_at TIMESTAMPTZ`))
+  .catch(e => console.error('migrim kompani_pare:', e.message));
 // Njoftimet e Google Alerts (nga feed-et RSS), per tab-in "Alerte".
 pool.query(`CREATE TABLE IF NOT EXISTS alerte_rezultate (
   id SERIAL PRIMARY KEY,
@@ -363,23 +369,35 @@ function normalizoDomain(d) { return String(d || '').trim().toLowerCase().replac
 async function merrDomainetePara() {
   const kufi = 5000;
   const teGjitha = new Set();
-  const pare = await pool.query('SELECT domain FROM kompani_pare ORDER BY gjetur_at DESC LIMIT ' + kufi);
+  const pare = await pool.query('SELECT domain FROM kompani_pare WHERE fshih = true ORDER BY gjetur_at DESC LIMIT ' + kufi);
   pare.rows.forEach(r => { const d = normalizoDomain(r.domain); if (d) teGjitha.add(d); });
   const ruajtura = await pool.query('SELECT domain FROM bizneset_gjetur');
   ruajtura.rows.forEach(r => { const d = normalizoDomain(r.domain); if (d) teGjitha.add(d); });
   return Array.from(teGjitha).slice(0, kufi);
 }
 
-async function ruajDomainetePara(kompanite) {
-  const domainet = [], emrat = [], pare = new Set();
+// Ruan kompanite me te dhenat e plota. Nese ekzistojne (p.sh. ruajtur me pare me email), te dhenat e vjetra MBETEN dhe
+// plotesohen vetem fushat bosh; "fshih" behet perseri true. Kthen gjendjen e email-it per secilen dhe e shton te objekti.
+async function ruajKompanite(kompanite) {
+  const A = { d: [], emri: [], web: [], viti: [], pun: [], shteti: [], qyteti: [], li: [], tw: [] }, pare = new Set(), objekte = {};
   for (const k of kompanite) {
     const d = normalizoDomain(k.domain);
     if (!d || pare.has(d)) continue;
-    pare.add(d); domainet.push(d); emrat.push(k.emri || '');
+    pare.add(d); objekte[d] = k;
+    A.d.push(d); A.emri.push(k.emri || ''); A.web.push(k.website || null); A.viti.push(Number.isInteger(k.viti) ? k.viti : null);
+    A.pun.push(k.punonjes || null); A.shteti.push(k.shteti || null); A.qyteti.push(k.qyteti || null); A.li.push(k.linkedin || null); A.tw.push(k.twitter || null);
   }
-  if (!domainet.length) return 0;
-  await pool.query('INSERT INTO kompani_pare (domain, emri) SELECT * FROM UNNEST($1::text[], $2::text[]) ON CONFLICT (domain) DO NOTHING', [domainet, emrat]);
-  return domainet.length;
+  if (!A.d.length) return 0;
+  const r = await pool.query(
+    'INSERT INTO kompani_pare (domain, emri, website, viti, punonjes, shteti, qyteti, linkedin, twitter) ' +
+    'SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::int[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[]) ' +
+    'ON CONFLICT (domain) DO UPDATE SET emri = COALESCE(NULLIF(kompani_pare.emri, \'\'), EXCLUDED.emri), website = COALESCE(kompani_pare.website, EXCLUDED.website), ' +
+    'viti = COALESCE(kompani_pare.viti, EXCLUDED.viti), punonjes = COALESCE(kompani_pare.punonjes, EXCLUDED.punonjes), shteti = COALESCE(kompani_pare.shteti, EXCLUDED.shteti), ' +
+    'qyteti = COALESCE(kompani_pare.qyteti, EXCLUDED.qyteti), linkedin = COALESCE(kompani_pare.linkedin, EXCLUDED.linkedin), twitter = COALESCE(kompani_pare.twitter, EXCLUDED.twitter), fshih = true ' +
+    'RETURNING domain, email, email_lloji, email_mx, email_burimi, email_gjendja',
+    [A.d, A.emri, A.web, A.viti, A.pun, A.shteti, A.qyteti, A.li, A.tw]);
+  (r.rows || []).forEach(x => { const k = objekte[normalizoDomain(x.domain)]; if (k) Object.assign(k, { email: x.email || null, email_lloji: x.email_lloji || null, email_mx: x.email_mx == null ? null : x.email_mx, email_burimi: x.email_burimi || null, email_gjendja: x.email_gjendja || null }); });
+  return A.d.length;
 }
 
 // Kerkesa qe i kthehet faqes per shfaqje: lista e gjate e domain-eve te perjashtuara zevendesohet me nje permbledhje.
@@ -389,6 +407,220 @@ function kerkesePerShfaqje(trupi) {
   if (kopje.filters) { trego(kopje.filters); (kopje.filters.conditions || []).forEach(trego); }
   return kopje;
 }
+
+// ===== GJETJA E EMAIL-IT NGA FAQJA E KOMPANISE (pa Generect) =====
+// Lexon faqen kryesore + faqet e kontaktit/rreth nesh (maks. 4 faqe per kompani), nxjerr adresat qe jane SHKRUAR atje
+// (mailto: dhe tekst) dhe zgjedh me te miren (AI kur ka disa). Nuk hamendeson kurre adresa: nje adrese pranohet vetem nese
+// ndodhet fjale per fjale ne faqe. Faqet merren vetem per domain-e te ruajtura nga Crustdata, me mbrojtje SSRF.
+const dnsP = require('dns').promises;
+const net = require('net');
+
+function ipPublike(ip) {
+  if (net.isIPv4(ip)) {
+    const [a, b, c] = ip.split('.').map(Number);
+    if (a === 0 || a === 10 || a === 127 || a >= 224) return false;
+    if (a === 169 && b === 254) return false;                  // link-local (p.sh. 169.254.169.254, metadata cloud)
+    if (a === 172 && b >= 16 && b <= 31) return false;
+    if (a === 192 && b === 168) return false;
+    if (a === 100 && b >= 64 && b <= 127) return false;        // CGNAT
+    if (a === 192 && b === 0 && (c === 0 || c === 2)) return false;
+    if (a === 198 && (b === 18 || b === 19)) return false;
+    return true;
+  }
+  if (net.isIPv6(ip)) {
+    const x = ip.toLowerCase();
+    if (x === '::' || x === '::1') return false;
+    if (x.startsWith('fc') || x.startsWith('fd')) return false;
+    if (/^fe[89ab]/.test(x)) return false;
+    const m = x.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    if (m) return ipPublike(m[1]);
+    return true;
+  }
+  return false;
+}
+
+async function adreseESigurt(host) {
+  const h = String(host).replace(/^\[|\]$/g, '');
+  if (net.isIP(h)) { if (!ipPublike(h)) throw new Error('adrese e brendshme e bllokuar'); return; }
+  let adresat;
+  try { adresat = await dnsP.lookup(h, { all: true }); } catch (e) { throw new Error('domain-i nuk zgjidhet'); }
+  if (!adresat.length || !adresat.every(a => ipPublike(a.address))) throw new Error('domain-i shpie te nje adrese e brendshme: bllokuar');
+}
+
+async function lexoTrupin(r, kufi) {
+  if (r.body && typeof r.body.getReader === 'function') {
+    const lexues = r.body.getReader(), dekoder = new TextDecoder('utf-8');
+    let tekst = '', total = 0;
+    while (total < kufi) {
+      const { done, value } = await lexues.read();
+      if (done) break;
+      total += value.length; tekst += dekoder.decode(value, { stream: true });
+    }
+    try { await lexues.cancel(); } catch (e) { /* tashme e mbyllur */ }
+    return tekst;
+  }
+  return String(await r.text()).slice(0, kufi);
+}
+
+// Merr nje faqe te sigurt: vetem http(s) ne portet 80/443, pa kredenciale, ridrejtimet ndiqen dorazi (maks. 3) dhe
+// secili kalon perseri kontrollin e adreses; vetem HTML; maks. ~400 KB.
+async function marrFaqen(url, afati) {
+  let aktual = url;
+  for (let hop = 0; hop < 4; hop++) {
+    const u = new URL(aktual);
+    if (!/^https?:$/.test(u.protocol) || u.username || u.password) throw new Error('adrese e palejuar');
+    if (u.port && u.port !== '80' && u.port !== '443') throw new Error('port i palejuar');
+    await adreseESigurt(u.hostname);
+    const r = await fetchMeKohe(u.toString(), { redirect: 'manual', headers: { 'user-agent': 'Mozilla/5.0 (compatible; emailet)', 'accept': 'text/html,application/xhtml+xml' } }, afati || 7000);
+    const vendndodhja = r.headers && r.headers.get ? r.headers.get('location') : null;
+    if (r.status >= 300 && r.status < 400 && vendndodhja) { aktual = new URL(vendndodhja, u).toString(); continue; }
+    if (!r.ok) return { ok: false, status: r.status, html: '', url: u.toString() };
+    const tipi = String((r.headers && r.headers.get && r.headers.get('content-type')) || '').toLowerCase();
+    if (tipi && !/text\/html|application\/xhtml/.test(tipi)) return { ok: false, status: r.status, html: '', url: u.toString() };
+    return { ok: true, status: r.status, html: await lexoTrupin(r, 400000), url: u.toString() };
+  }
+  throw new Error('shume ridrejtime');
+}
+
+function dekodoHtml(s) {
+  return dekodoXml(String(s || '')
+    .replace(/&#x([0-9a-f]+);/gi, (m, h) => { try { return String.fromCodePoint(parseInt(h, 16)); } catch (e) { return ''; } })
+    .replace(/&commat;/gi, '@').replace(/&nbsp;/gi, ' '));
+}
+
+// Lidhjet e brendshme drejt faqeve te kontaktit/rreth nesh/ekipit (maks. 3).
+function gjejLidhjetKontakt(html, baza) {
+  const dalja = [], pare = new Set();
+  let b; try { b = new URL(baza); } catch (e) { return dalja; }
+  const emriHost = h => h.replace(/^www\./, '');
+  for (const m of String(html || '').matchAll(/<a\b[^>]*\bhref\s*=\s*["']([^"'#]+)["'][^>]*>([\s\S]{0,120}?)<\/a>/gi)) {
+    const tekst = m[2].replace(/<[^>]+>/g, ' ');
+    if (!/contact|about|team|impressum|partner|advertis|get-in-touch|reach-us/i.test(m[1] + ' ' + tekst)) continue;
+    let u; try { u = new URL(dekodoXml(m[1]), b); } catch (e) { continue; }
+    if (!/^https?:$/.test(u.protocol) || emriHost(u.hostname) !== emriHost(b.hostname)) continue;
+    u.hash = '';
+    const k = u.toString();
+    if (k !== b.toString() && !pare.has(k)) { pare.add(k); dalja.push(k); }
+  }
+  return dalja.slice(0, 3);
+}
+
+const EMAIL_RE = /[A-Za-z0-9][A-Za-z0-9._%+-]*@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
+const EMAIL_SKEDAR = /\.(png|jpe?g|gif|svg|webp|avif|ico|css|js|json|woff2?|ttf|eot|pdf|zip|mp4|webm)$/i;
+const DOMAIN_ANASHKALO = /(^|\.)(example\.(com|org|net)|domain\.com|yourdomain\.com|yourcompany\.com|email\.com|test\.com|sentry\.io|wixpress\.com|godaddy\.com|schema\.org|w3\.org|gravatar\.com|cloudflare\.com|googleusercontent\.com)$/i;
+const LOCAL_ANASHKALO = /^(noreply|no-reply|donotreply|do-not-reply|mailer-daemon|postmaster|abuse|webmaster|hostmaster|privacy|legal|dpo|gdpr|unsubscribe|bounce|bounces|root|email|name|you|your|yourname|user|username|example|test)$/i;
+function emailIVlefshem(e) {
+  const [l, d] = e.split('@');
+  if (!l || !d || EMAIL_SKEDAR.test(e) || DOMAIN_ANASHKALO.test(d) || LOCAL_ANASHKALO.test(l)) return false;
+  if (/\dx$/.test(l) || l.length > 64 || e.length > 120) return false;
+  return true;
+}
+
+// Nxjerr adresat e SHKRUARA ne faqe: mailto:, teksti i dukshem dhe JSON-LD. Kthen [{ email, kontekst }].
+function nxirrEmailet(html) {
+  let t = String(html || '');
+  const ld = (t.match(/<script[^>]+application\/ld\+json[^>]*>[\s\S]*?<\/script>/gi) || []).map(s => s.replace(/<[^>]+>/g, ' ')).join(' ');
+  t = t.replace(/<(script|style|noscript)\b[\s\S]*?<\/\1>/gi, ' ');
+  const gjetur = new Map();
+  const shto = (em, ktx) => {
+    const e = String(em).trim().replace(/[.,;:)\]>]+$/, '').toLowerCase();
+    if (/^[a-z0-9][a-z0-9._%+-]*@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$/.test(e) && !gjetur.has(e)) gjetur.set(e, ktx || '');
+  };
+  for (const m of t.matchAll(/href\s*=\s*["']mailto:([^"'?#\s>]+)/gi)) {
+    let v = dekodoHtml(m[1]); try { v = decodeURIComponent(v); } catch (e) { /* mbetet siç eshte */ }
+    shto(v, 'mailto');
+  }
+  const tekst = dekodoHtml(t.replace(/<[^>]+>/g, ' ') + ' ' + ld).replace(/\s+/g, ' ');
+  for (const m of tekst.matchAll(EMAIL_RE)) shto(m[0], tekst.slice(Math.max(0, m.index - 50), m.index + m[0].length + 50).trim());
+  return Array.from(gjetur.entries()).filter(([e]) => emailIVlefshem(e)).map(([email, kontekst]) => ({ email, kontekst }));
+}
+
+// Rangu per bashkepunim: person (0) > partner/marketing/founder (1) > hello/contact/info (2) > support/sales (3) > press/jobs (4).
+const ROL_PRIORITET = [
+  ['partner', 'partners', 'partnership', 'partnerships', 'marketing', 'growth', 'founder', 'founders', 'ceo', 'owner', 'bd', 'business'],
+  ['hello', 'hi', 'hey', 'contact', 'info', 'team', 'mail', 'office', 'general', 'enquiries', 'inquiries', 'contacto'],
+  ['support', 'help', 'sales', 'admin', 'billing', 'service', 'accounts'],
+  ['press', 'media', 'pr', 'jobs', 'careers', 'hr', 'recruiting', 'recruitment']
+];
+function rangEmail(email) {
+  const l = email.split('@')[0].toLowerCase().replace(/[^a-z]/g, '');
+  const i = ROL_PRIORITET.findIndex(g => g.includes(l));
+  return i === -1 ? { lloji: 'person', rang: 0 } : { lloji: 'role', rang: i + 1 };
+}
+
+// AI zgjedh VETEM nga lista e dhene (kthen numrin e kandidatit), keshtu nuk mund te shpik adrese.
+async function zgjidhEmailMeAI(domain, kandidatet) {
+  const lista = kandidatet.slice(0, 8).map((k, i) => (i + 1) + '. ' + k.email + (k.kontekst && k.kontekst !== 'mailto' ? ' — "' + k.kontekst.slice(0, 100) + '"' : '')).join('\n');
+  const prompt =
+    'You pick the best contact email address for a first outreach message to the owner or founder of a small software company, about a partnership (cross-promotion of each other\'s products).\n' +
+    'Company website: ' + domain + '\nCandidate addresses found written on its website (with the text around each):\n' + lista + '\n\n' +
+    'Rules: prefer a named person (founder, CEO, owner) over a shared mailbox; prefer partnerships, marketing, hello or contact over support, billing, jobs or press. Never invent an address. ' +
+    'Answer ONLY with JSON: {"index": N} where N is the number of the best candidate, or {"index": null} if none is suitable.';
+  const r = await fetchMeKohe('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + OPENAI_KEY },
+    body: JSON.stringify({ model: OPENAI_MODELI, messages: [{ role: 'user', content: prompt }] })
+  }, 30000);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error('OpenAI: ' + ((data.error && data.error.message) || r.status));
+  const tekst = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
+  const m = tekst.match(/"index"\s*:\s*(null|\d+)/);
+  if (!m) throw new Error('AI nuk ktheu format te vlefshem');
+  if (m[1] === 'null') return null;
+  const k = kandidatet.slice(0, 8)[Number(m[1]) - 1];
+  if (!k) throw new Error('AI ktheu numer jashte liste');
+  return k;
+}
+
+// Kthen { email, lloji, metoda } ose null (asnje adrese e pershtatshme).
+async function zgjidhEmail(domain, kandidatet) {
+  const me = kandidatet.map(k => {
+    const d = k.email.split('@')[1];
+    return Object.assign({}, k, rangEmail(k.email), { nedomain: d === domain || d.endsWith('.' + domain) });
+  });
+  const pool_ = me.some(k => k.nedomain) ? me.filter(k => k.nedomain) : me; // adresat e domain-it te kompanise kane perparesi
+  if (pool_.length === 1) return { email: pool_[0].email, lloji: pool_[0].lloji, metoda: 'e vetme' };
+  if (OPENAI_KEY) {
+    try {
+      const k = await zgjidhEmailMeAI(domain, pool_);
+      return k ? { email: k.email, lloji: rangEmail(k.email).lloji, metoda: 'AI' } : null;
+    } catch (e) { /* AI s'punoi: bie te rregulli i thjeshte */ }
+  }
+  const h = pool_.slice().sort((a, b) => a.rang - b.rang || a.email.localeCompare(b.email))[0];
+  return { email: h.email, lloji: h.lloji, metoda: 'rregull' };
+}
+
+async function kontrolloMX(email) {
+  try { const r = await dnsP.resolveMx(email.split('@')[1]); return Array.isArray(r) && r.length > 0; }
+  catch (e) { return (e && (e.code === 'ENODATA' || e.code === 'ENOTFOUND')) ? false : null; } // null = e panjohur (p.sh. DNS i zene)
+}
+
+// Gjen email-in per nje domain. Kthen { gjendja: 'u-gjet'|'pa-email'|'gabim', email, lloji, mx, burimi, mesazh }.
+async function gjejEmailPerKompani(domain) {
+  const afati = Date.now() + 25000;
+  const baza = 'https://' + domain + '/';
+  const faqet = [], gabime = [];
+  const merr = async u => {
+    try { const f = await marrFaqen(u, 7000); if (f.ok) faqet.push(f); else gabime.push('HTTP ' + f.status); }
+    catch (e) { gabime.push(String(e.message).replace(/https?:\/\/\S+/g, '[adrese]')); }
+  };
+  await merr(baza);
+  if (!faqet.length) return { gjendja: 'gabim', mesazh: 'Faqja nuk u hap (' + (gabime[0] || 'pa pergjigje') + ')' };
+  const planifikuar = gjejLidhjetKontakt(faqet[0].html, faqet[0].url).concat(['/contact', '/contact-us', '/about'].map(p => baza.replace(/\/$/, '') + p));
+  for (const u of planifikuar) {
+    if (faqet.length >= 4 || Date.now() > afati) break;
+    if (faqet.some(f => f.url === u)) continue;
+    await merr(u);
+  }
+  const kandidatet = [], pare = new Set();
+  for (const f of faqet) for (const k of nxirrEmailet(f.html)) if (!pare.has(k.email)) { pare.add(k.email); kandidatet.push(Object.assign({ burimi: f.url }, k)); }
+  if (!kandidatet.length) return { gjendja: 'pa-email', mesazh: 'Asnje email i shkruar ne ' + faqet.length + ' faqe te lexuara' };
+  const zgj = await zgjidhEmail(domain, kandidatet);
+  if (!zgj) return { gjendja: 'pa-email', mesazh: 'Asnje nga adresat e gjetura nuk duket e pershtatshme' };
+  const burimi = (kandidatet.find(k => k.email === zgj.email) || {}).burimi || null;
+  return { gjendja: 'u-gjet', email: zgj.email, lloji: zgj.lloji, mx: await kontrolloMX(zgj.email), burimi, mesazh: 'Zgjedhur me: ' + zgj.metoda + ' (nga ' + kandidatet.length + ' adresa)' };
+}
+let emailNeVazhdim = 0;
 
 function sheshoKompanine(c) {
   const b = c.basic_info || {}, l = c.locations || {}, s = c.social_profiles || {};
@@ -668,7 +900,7 @@ app.get('/', (req, res) => {
   </div>
 
   <div class="sec-panel" id="panelKompani">
-    <p class="mut">Gjen kompani te themeluara rishtas permes Crustdata. Ketu shfaqet vetem cfare kthen; ruhet vetem lista e domain-eve qe te jane dhene (qe te mos te dalin dy here); nuk gjendet email. Sipas dokumentimit, kerkimi kushton 0.03 kredite per rezultat, plus rreth 0.1 per filtrin e industrise dhe 0.2 per filtrin e punonjesve. Kostoja e sakte shfaqet pas cdo kerkese. Fusha "Fjale kyce" kerkon sipas kuptimit (jo vetem sipas etiketes se industrise) dhe, kur eshte e mbushur, i rendit rezultatet sipas perputhjes, jo sipas vitit; filtrat e tjere mbeten kushte te forta.</p>
+    <p class="mut">Gjen kompani te themeluara rishtas permes Crustdata dhe i ruan te databaza (emri, faqja, viti, punonjes, shteti, LinkedIn). Sipas dokumentimit, kerkimi kushton 0.03 kredite per rezultat, plus rreth 0.1 per filtrin e industrise dhe 0.2 per filtrin e punonjesve; kostoja e sakte shfaqet pas cdo kerkese. Fusha Fjale kyce kerkon sipas kuptimit (jo vetem sipas etiketes se industrise) dhe, kur eshte e mbushur, i rendit rezultatet sipas perputhjes, jo sipas vitit; filtrat e tjere mbeten kushte te forta. Butoni Gjej email lexon faqen e kompanise (kryesore, kontakt, rreth nesh) dhe merr email-in qe eshte SHKRUAR atje; kur ka disa, AI zgjedh me te mirin. Asnje adrese nuk hamendesohet, dhe kjo nuk shpenzon kredite Crustdata. Te gjitha te ruajturat shfaq edhe ato te gjeneruara me pare.</p>
     <div class="row">
       <div class="fusha"><span>Themeluar nga viti (perfshire)</span><input type="number" id="kompViti" value="2025" min="1990" max="2030" style="width:150px;" oninput="kompVleresim()" /></div>
       <div class="fusha"><span>Industria (opsionale)</span><input type="text" id="kompIndustria" value="Software Development" style="width:230px; flex:none; min-width:0;" oninput="kompVleresim()" /></div>
@@ -685,7 +917,12 @@ app.get('/', (req, res) => {
     </div>
     <div class="row">
       <label class="bisChk"><input type="checkbox" id="kompFshih" checked /> Fshih kompanite qe te jane dhene me pare</label>
-      <button onclick="kompPastro(this)" style="background:#2a313c;">Pastro historikun</button>
+      <button onclick="kompPastro(this)" style="background:#2a313c;">Lejo rishfaqjen (te dhenat mbeten)</button>
+    </div>
+    <div class="row">
+      <button onclick="kompRuajtura(this)" style="background:#2a313c;">Te gjitha te ruajturat</button>
+      <select id="kompFiltri" onchange="kompRuajtura()"><option value="te-gjitha">Te gjitha</option><option value="me-email">Vetem me email</option><option value="pa-email">Vetem pa email</option></select>
+      <button onclick="kompGjejTeGjitha(this)" style="background:#2a313c;">Gjej email-et per ato qe s'i kam kerkuar (maks. 20)</button>
     </div>
     <div id="kompSugj" style="margin-bottom:8px;"></div>
     <div id="kompStat" style="font-size:13px; color:#8b949e; margin-bottom:12px;"></div>
@@ -852,12 +1089,12 @@ async function kompKerko(btn){
 }
 async function kompPastro(btn){
   var stat = document.getElementById('kompStat');
-  if(!confirm('Te fshij historikun e kompanive te treguara? Kerkimi i radhes mund te te shfaqe serish ato qe i ke pare.')){ return; }
-  btn.disabled = true; stat.textContent = 'Po pastroj...';
+  if(!confirm('Kompanite e ruajtura dhe email-et e tyre MBETEN. Vetem do te lejohet qe te shfaqen serish te kerkimet. Vazhdo?')){ return; }
+  btn.disabled = true; stat.textContent = 'Po e lejoj...';
   try{
     var r = await fetch('/api/kompani-reja/pastro', { method:'POST' });
     var d = await r.json();
-    stat.textContent = d.error ? ('Gabim: ' + d.error) : 'Historiku u pastrua.';
+    stat.textContent = d.error ? ('Gabim: ' + d.error) : 'U lejuan te shfaqen serish; te dhenat mbeten te ruajtura.';
   }catch(e){ stat.textContent = 'Gabim rrjeti: ' + e.message; }
   btn.disabled = false;
 }
@@ -867,6 +1104,108 @@ function kompCel(tr, tekst, href){
     var a = document.createElement('a'); a.textContent = tekst; a.href = href; a.target = '_blank'; a.rel = 'noopener noreferrer'; td.appendChild(a);
   } else { td.textContent = tekst || ''; }
   tr.appendChild(td);
+}
+function kompEmailCel(td, k){
+  td.innerHTML = '';
+  if(k.email){
+    var s = document.createElement('span'); s.textContent = k.email; s.style.cssText = 'font-weight:600;'; td.appendChild(s);
+    var m = document.createElement('div'); m.style.cssText = 'font-size:11px; color:#8b949e;';
+    m.textContent = (k.email_lloji === 'role' ? 'adrese roli' : 'person') + (k.email_mx === false ? ' | MX: jo' : (k.email_mx ? ' | MX ok' : ''));
+    td.appendChild(m);
+    if(k.email_burimi && (k.email_burimi.indexOf('http://') === 0 || k.email_burimi.indexOf('https://') === 0)){
+      var a = document.createElement('a'); a.textContent = 'burimi'; a.href = k.email_burimi; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.style.cssText = 'font-size:11px;';
+      td.appendChild(a);
+    }
+    return;
+  }
+  var tekst = k.email_gjendja === 'pa-email' ? 'pa email ne faqe ' : (k.email_gjendja === 'gabim' ? 'faqja nuk u hap ' : '');
+  if(tekst){ var t = document.createElement('span'); t.textContent = tekst; t.style.cssText = 'font-size:12px; color:#8b949e;'; td.appendChild(t); }
+  var b = document.createElement('button'); b.textContent = tekst ? 'Provo serish' : 'Gjej email'; b.style.cssText = 'padding:3px 9px; font-size:12px; background:#2a313c;';
+  b.onclick = function(){ kompGjejEmail(k.domain, td, !!tekst); };
+  td.appendChild(b);
+}
+async function kompGjejEmail(domain, td, rigjej){
+  td.textContent = 'po kerkoj...';
+  try{
+    var r = await fetch('/api/kompani-reja/email', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ domain: domain, rigjej: !!rigjej }) });
+    var d = await r.json();
+    if(d.error){ td.textContent = 'Gabim: ' + d.error; return null; }
+    kompEmailCel(td, { domain: domain, email: d.email, email_lloji: d.email_lloji, email_mx: d.email_mx, email_burimi: d.email_burimi, email_gjendja: d.email_gjendja });
+    var tr = td.parentNode;
+    if(tr && tr.setAttribute){ tr.setAttribute('data-gjendja', d.email_gjendja || ''); }
+    return d;
+  }catch(e){ td.textContent = 'Gabim rrjeti: ' + e.message; return null; }
+}
+async function kompGjejTeGjitha(btn){
+  var stat = document.getElementById('kompStat');
+  var rreshta = Array.prototype.slice.call(document.querySelectorAll('#kompRez tbody tr[data-domain]')).filter(function(tr){
+    var g = tr.getAttribute('data-gjendja');
+    return !g || g === 'pa-kerkuar';
+  }).slice(0, 20);
+  if(!rreshta.length){ stat.textContent = 'Asnje kompani pa email te pakerkuar ne tabelen qe po shfaqet.'; return; }
+  btn.disabled = true;
+  var gjetur = 0;
+  for(var i = 0; i < rreshta.length; i++){
+    stat.textContent = 'Po kerkoj email ' + (i + 1) + '/' + rreshta.length + '...';
+    var d = await kompGjejEmail(rreshta[i].getAttribute('data-domain'), rreshta[i].querySelector('td.kompEmail'), false);
+    if(d && d.email){ gjetur++; }
+  }
+  stat.textContent = 'U gjeten ' + gjetur + ' email nga ' + rreshta.length + ' faqe te lexuara.';
+  btn.disabled = false;
+}
+function kompTabela(rreshta){
+  var tbl = document.createElement('table');
+  var thead = document.createElement('thead'), hr = document.createElement('tr');
+  ['Emri', 'Domain', 'Viti', 'Punonjes', 'Shteti', 'Email', 'LinkedIn', 'X'].forEach(function(t){ var th = document.createElement('th'); th.textContent = t; hr.appendChild(th); });
+  thead.appendChild(hr); tbl.appendChild(thead);
+  var tbody = document.createElement('tbody');
+  rreshta.forEach(function(k){
+    var tr = document.createElement('tr');
+    tr.setAttribute('data-domain', k.domain || '');
+    tr.setAttribute('data-gjendja', k.email ? 'u-gjet' : (k.email_gjendja || 'pa-kerkuar'));
+    var sigurt = k.domain && /^[a-z0-9.-]+$/i.test(k.domain) ? ('https://' + k.domain) : null;
+    kompCel(tr, k.emri || '(pa emer)', null);
+    var webOk = k.website && (k.website.indexOf('http://') === 0 || k.website.indexOf('https://') === 0);
+    kompCel(tr, k.domain || k.website || '', webOk ? k.website : sigurt);
+    kompCel(tr, k.viti != null ? String(k.viti) : '', null);
+    kompCel(tr, k.punonjes || '', null);
+    kompCel(tr, k.shteti || '', null);
+    var tdE = document.createElement('td'); tdE.className = 'kompEmail';
+    if(k.domain){ kompEmailCel(tdE, k); }
+    tr.appendChild(tdE);
+    kompCel(tr, k.linkedin ? 'LinkedIn' : '', k.linkedin);
+    kompCel(tr, k.twitter ? 'X' : '', k.twitter);
+    tbody.appendChild(tr);
+  });
+  tbl.appendChild(tbody);
+  return tbl;
+}
+async function kompRuajtura(btn){
+  var stat = document.getElementById('kompStat'), rez = document.getElementById('kompRez');
+  var filtri = document.getElementById('kompFiltri').value;
+  if(btn){ btn.disabled = true; }
+  stat.textContent = 'Po ngarkoj te ruajturat...'; rez.innerHTML = '';
+  try{
+    var r = await fetch('/api/kompani-reja/ruajtura?filtri=' + encodeURIComponent(filtri) + '&limit=200');
+    var d = await r.json();
+    if(d.error){ stat.textContent = 'Gabim: ' + d.error; }
+    else { stat.textContent = ''; kompShfaqRuajtura(d); }
+  }catch(e){ stat.textContent = 'Gabim rrjeti: ' + e.message; }
+  if(btn){ btn.disabled = false; }
+}
+function kompShfaqRuajtura(d){
+  var rez = document.getElementById('kompRez'); rez.innerHTML = '';
+  var p = document.createElement('div');
+  p.style.cssText = 'font-size:13px; color:#3fb950; font-weight:600; margin-bottom:6px;';
+  var totali = d.filtri === 'me-email' ? d.me_email : (d.filtri === 'pa-email' ? d.pa_email : d.gjithsej);
+  p.textContent = d.gjithsej + ' kompani te ruajtura | me email: ' + d.me_email + ' | pa email: ' + d.pa_email + ' | shfaqen ' + d.rows.length + (totali > d.rows.length ? (' nga ' + totali) : '');
+  rez.appendChild(p);
+  if(!d.rows.length){
+    var bosh = document.createElement('div'); bosh.style.cssText = 'font-size:13px; color:#8b949e;';
+    bosh.textContent = 'Asnje kompani ne kete filter.';
+    rez.appendChild(bosh); return;
+  }
+  rez.appendChild(kompTabela(d.rows));
 }
 function kompShfaq(d){
   var rez = document.getElementById('kompRez'); rez.innerHTML = '';
@@ -880,27 +1219,7 @@ function kompShfaq(d){
     bosh.textContent = 'Asnje rezultat. Provo pa industri, ose me nje vlere nga Sugjerime industrie.';
     rez.appendChild(bosh);
   }
-  else {
-    var tbl = document.createElement('table');
-    var thead = document.createElement('thead'), hr = document.createElement('tr');
-    ['Emri', 'Domain', 'Viti', 'Punonjes', 'Shteti', 'LinkedIn', 'X'].forEach(function(t){ var th = document.createElement('th'); th.textContent = t; hr.appendChild(th); });
-    thead.appendChild(hr); tbl.appendChild(thead);
-    var tbody = document.createElement('tbody');
-    d.kompanite.forEach(function(k){
-      var tr = document.createElement('tr');
-      var sigurt = k.domain && /^[a-z0-9.-]+$/i.test(k.domain) ? ('https://' + k.domain) : null;
-      kompCel(tr, k.emri || '(pa emer)', null);
-      var webOk = k.website && (k.website.indexOf('http://') === 0 || k.website.indexOf('https://') === 0);
-      kompCel(tr, k.domain || k.website || '', webOk ? k.website : sigurt);
-      kompCel(tr, k.viti != null ? String(k.viti) : '', null);
-      kompCel(tr, k.punonjes || '', null);
-      kompCel(tr, k.shteti || '', null);
-      kompCel(tr, k.linkedin ? 'LinkedIn' : '', k.linkedin);
-      kompCel(tr, k.twitter ? 'X' : '', k.twitter);
-      tbody.appendChild(tr);
-    });
-    tbl.appendChild(tbody); rez.appendChild(tbl);
-  }
+  else { rez.appendChild(kompTabela(d.kompanite)); }
   [['Kerkesa e derguar te Crustdata', d.kerkesa], ['JSON i plote nga Crustdata', d.raw]].forEach(function(p){
     var det = document.createElement('details'); det.style.cssText = 'margin-top:14px;';
     var sum = document.createElement('summary'); sum.textContent = p[0]; sum.style.cssText = 'cursor:pointer; font-size:12px; color:#8b949e;';
@@ -1377,7 +1696,7 @@ app.post('/api/kompani-reja/kerko', async (req, res) => {
     const { r, perdorur } = await kerkoKompani(trupiBaze);
     if (!r.ok) return res.status([400, 401, 403, 429].includes(r.status) ? r.status : 502).json({ error: mesazhGabimiCrustdata(r), kredite_perdorur: r.kredite });
     const kompanite = (Array.isArray(r.data.companies) ? r.data.companies : []).map(sheshoKompanine);
-    try { await ruajDomainetePara(kompanite); } // ruhen gjithmone, qe perjashtimi te funksionoje kur te ndezet
+    try { await ruajKompanite(kompanite); } // ruhen gjithmone me te dhenat e plota (qe perjashtimi dhe "Te gjitha" te funksionojne)
     catch (e) { paralajmerim = (paralajmerim ? paralajmerim + ' ' : '') + 'Historiku nuk u ruajt (' + e.message + ').'; }
     res.json({
       ok: true, kerkesa: kerkesePerShfaqje(perdorur.trupi), renditja: perdorur.sorts, kredite_perdorur: r.kredite,
@@ -1389,9 +1708,51 @@ app.post('/api/kompani-reja/kerko', async (req, res) => {
 
 app.post('/api/kompani-reja/pastro', async (req, res) => {
   try {
-    const r = await pool.query('DELETE FROM kompani_pare'); // vetem historiku i ketij tab-i; bizneset e ruajtura nuk preken
-    res.json({ ok: true, fshire: r.rowCount == null ? null : r.rowCount });
+    // Nuk fshin asgje: vetem lejon qe kompanite e ruajtura (me email-et e tyre) te shfaqen serish te kerkimet.
+    const r = await pool.query('UPDATE kompani_pare SET fshih = false');
+    res.json({ ok: true, liruar: r.rowCount == null ? null : r.rowCount });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Te gjitha kompanite e ruajtura (edhe ato te gjeneruara me pare), me filtrin e email-it.
+app.get('/api/kompani-reja/ruajtura', async (req, res) => {
+  try {
+    const q = req.query || {};
+    const filtri = ['me-email', 'pa-email'].includes(q.filtri) ? q.filtri : 'te-gjitha';
+    const limit = Math.min(500, Math.max(1, parseInt(q.limit, 10) || 100));
+    const offset = Math.max(0, parseInt(q.offset, 10) || 0);
+    const kushti = filtri === 'me-email' ? 'WHERE email IS NOT NULL' : filtri === 'pa-email' ? 'WHERE email IS NULL' : '';
+    const rows = (await pool.query(
+      'SELECT domain, emri, website, viti, punonjes, shteti, qyteti, linkedin, twitter, email, email_lloji, email_mx, email_burimi, email_gjendja, gjetur_at ' +
+      'FROM kompani_pare ' + kushti + ' ORDER BY gjetur_at DESC, domain LIMIT $1 OFFSET $2', [limit, offset])).rows;
+    const n = (await pool.query('SELECT COUNT(*)::int AS gjithsej, COUNT(email)::int AS me_email FROM kompani_pare')).rows[0] || {};
+    const gjithsej = n.gjithsej || 0, meEmail = n.me_email || 0;
+    res.json({ ok: true, filtri, rows, gjithsej, me_email: meEmail, pa_email: gjithsej - meEmail });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Gjen email-in nga faqja e nje kompanie TE RUAJTUR (domain-i duhet te jete ne databaze, jo adrese e lire: shmang abuzimin).
+app.post('/api/kompani-reja/email', async (req, res) => {
+  const b = req.body || {};
+  const domain = normalizoDomain(b.domain);
+  if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(domain) || net.isIP(domain) || !/[a-z]/.test(domain.split('.').pop())) {
+    return res.status(400).json({ error: 'Domain i pavlefshem.' }); // pa adresa IP dhe pa "domain" me TLD vetem numra
+  }
+  if (emailNeVazhdim >= 3) return res.status(429).json({ error: 'Po kerkohen tashme 3 faqe njekohesisht. Prit pak dhe provo serish.' });
+  emailNeVazhdim++;
+  try {
+    const ekz = await pool.query('SELECT domain, email, email_lloji, email_mx, email_burimi, email_gjendja FROM kompani_pare WHERE domain = $1', [domain]);
+    if (!ekz.rows.length) return res.status(404).json({ error: 'Kompania nuk eshte e ruajtur. Kerko fillimisht te Crustdata.' });
+    const e0 = ekz.rows[0];
+    if (e0.email && !b.rigjej) {
+      return res.json({ ok: true, nga_kujtesa: true, domain, email: e0.email, email_lloji: e0.email_lloji || null, email_mx: e0.email_mx == null ? null : e0.email_mx, email_burimi: e0.email_burimi || null, email_gjendja: 'u-gjet', mesazh: 'E ruajtur me pare' });
+    }
+    const g = await gjejEmailPerKompani(domain);
+    await pool.query('UPDATE kompani_pare SET email = $2, email_lloji = $3, email_mx = $4, email_burimi = $5, email_gjendja = $6, email_at = now() WHERE domain = $1',
+      [domain, g.email || null, g.lloji || null, g.mx == null ? null : g.mx, g.burimi || null, g.gjendja]);
+    res.json({ ok: true, domain, email: g.email || null, email_lloji: g.lloji || null, email_mx: g.mx == null ? null : g.mx, email_burimi: g.burimi || null, email_gjendja: g.gjendja, mesazh: g.mesazh || '' });
+  } catch (e) { res.status(500).json({ error: String(e.message).replace(/https?:\/\/\S+/g, '[adrese]') }); }
+  finally { emailNeVazhdim--; }
 });
 
 app.get('/api/kompani-reja/kredite', async (req, res) => {
