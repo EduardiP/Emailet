@@ -1,5 +1,5 @@
 // Mjet zbulimi bizneseh — Exa API (zbulim) + OpenAI (filtrim AI) + Generect (email) + PostgreSQL.
-// Variabla mjedisi te kerkuara ne Railway: EXA_API_KEY, OPENAI_API_KEY, GENERECT_API_KEY, DATABASE_URL, SERPER_API_KEY (per tab-in Bisedat).
+// Variabla mjedisi te kerkuara ne Railway: EXA_API_KEY, OPENAI_API_KEY, GENERECT_API_KEY, DATABASE_URL, SERPER_API_KEY (per tab-in Bisedat), CRUSTDATA_API_KEY (per tab-in Kompani te reja).
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -288,6 +288,76 @@ async function kerkoSerper(q, koha) {
   return data;
 }
 
+// ===== KOMPANI TE REJA: kerkim te Crustdata (kompani te themeluara rishtas) =====
+// Variabel Railway: CRUSTDATA_API_KEY. Nuk ruan asgje dhe nuk gjen email; shfaq vetem cfare kthen Crustdata.
+// Sipas dokumentimit zyrtar: POST https://api.crustdata.com/company/search, "authorization: Bearer <celesi>"
+// dhe "x-api-version: 2025-11-01". Kerkimi kushton 0.03 kredite per rezultat + filtrat/fushat premium.
+const CRUSTDATA_KEY = process.env.CRUSTDATA_API_KEY;
+const CRUSTDATA_BAZA = 'https://api.crustdata.com';
+// Vetem fusha baze (pa grupe premium), qe kostoja te mbetet 0.03 per rezultat.
+const FUSHAT_KOMPANI = [
+  'crustdata_company_id',
+  'basic_info.name', 'basic_info.primary_domain', 'basic_info.website', 'basic_info.year_founded',
+  'basic_info.employee_count_range', 'basic_info.professional_network_url',
+  'locations.country', 'locations.headquarters',
+  'social_profiles.twitter_url'
+];
+
+async function crustdataThirr(metoda, rruga, trupi) {
+  const koka = { 'authorization': 'Bearer ' + CRUSTDATA_KEY, 'x-api-version': '2025-11-01' };
+  const opsione = { method: metoda, headers: koka };
+  if (trupi) { koka['content-type'] = 'application/json'; opsione.body = JSON.stringify(trupi); }
+  const r = await fetchMeKohe(CRUSTDATA_BAZA + rruga, opsione, 30000);
+  const data = await r.json().catch(() => ({}));
+  const k = parseFloat(r.headers && r.headers.get ? r.headers.get('x-credits-used') : null);
+  return { ok: r.ok, status: r.status, data, kredite: Number.isFinite(k) ? k : null };
+}
+
+function mesazhGabimiCrustdata(r) {
+  const msg = (r.data && r.data.error && r.data.error.message) || (r.data && r.data.message) || '';
+  if (r.status === 401) return 'Crustdata: celesi API mungon ose eshte i pavlefshem.';
+  if (r.status === 403) return 'Crustdata: leje e mohuar ose kredite te pamjaftueshme' + (msg ? ' (' + msg + ')' : '') + '. Kontrollo balancen te app.crustdata.com; nese eshte per nje filter premium, hiqe filtrin e industrise ose te punonjesve.';
+  if (r.status === 429) return 'Crustdata: shume kerkesa. Prit nje minute (kufiri per kerkimin e kompanive eshte 15 ne minute).';
+  return 'Crustdata ' + r.status + (msg ? ': ' + msg : '');
+}
+
+// Operatoret sipas dokumentimit: "=>" eshte >= (jo ">="), "=<" eshte <=, "(.)" eshte perputhje e perafert e fjaleve.
+function ndertoFiltratKompani(p) {
+  const kushte = [{ field: 'basic_info.year_founded', type: '=>', value: p.viti }];
+  if (p.industria) kushte.push({ field: 'taxonomy.professional_network_industry', type: '(.)', value: p.industria });
+  if (p.shteti) kushte.push({ field: 'locations.country', type: '=', value: p.shteti });
+  if (p.maksPunonjes) kushte.push({ field: 'headcount.total', type: '=<', value: p.maksPunonjes });
+  return kushte.length === 1 ? kushte[0] : { op: 'and', conditions: kushte };
+}
+
+function sheshoKompanine(c) {
+  const b = c.basic_info || {}, l = c.locations || {}, s = c.social_profiles || {};
+  return {
+    id: c.crustdata_company_id || null, emri: b.name || null, domain: b.primary_domain || null, website: b.website || null,
+    viti: b.year_founded || null, punonjes: b.employee_count_range || null, shteti: l.country || null, qyteti: l.headquarters || null,
+    linkedin: b.professional_network_url || null, twitter: s.twitter_url || null
+  };
+}
+
+// Dokumentimi permend dy emra per celesin e renditjes ("column" ne shembuj, "field" ne nje shembull tjeter).
+// Provohen me radhe; nje gabim 400 nuk kushton kredite. Gabimet e tjera ndalojne menjehere.
+async function kerkoKompani(trupiBaze) {
+  const variantet = [
+    { emri: 'column', sorts: [{ column: 'basic_info.year_founded', order: 'desc' }] },
+    { emri: 'field', sorts: [{ field: 'basic_info.year_founded', order: 'desc' }] },
+    { emri: 'pa renditje', sorts: null }
+  ];
+  let r = null, perdorur = null;
+  for (const v of variantet) {
+    const trupi = Object.assign({}, trupiBaze);
+    if (v.sorts) trupi.sorts = v.sorts;
+    r = await crustdataThirr('POST', '/company/search', trupi);
+    perdorur = { sorts: v.emri, trupi };
+    if (r.status !== 400 || !/sort|order/i.test(JSON.stringify(r.data))) break;
+  }
+  return { r, perdorur };
+}
+
 app.get('/', (req, res) => {
   res.type('html').send(`<!DOCTYPE html>
 <html lang="sq"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -308,6 +378,8 @@ app.get('/', (req, res) => {
   textarea{ width:100%; box-sizing:border-box; padding:10px 12px; border:1px solid #2a313c; border-radius:8px; background:#141b26; color:#e6edf3; font:14px/1.5 system-ui,sans-serif; resize:vertical; }
   .bisChk{ display:inline-flex; align-items:center; gap:6px; margin:0 16px 8px 0; font-size:13px; color:#c9d1d9; cursor:pointer; }
   .bisChk input{ width:16px; height:16px; padding:0; margin:0; accent-color:#3b6ef0; }
+  .fusha{ display:flex; flex-direction:column; gap:4px; font-size:12px; color:#8b949e; }
+  .kompChip{ padding:4px 10px; font-size:12px; font-weight:400; background:#1c2230; border:1px solid #2a313c; border-radius:14px; color:#c9d1d9; cursor:pointer; margin:0 4px 6px 0; }
   button{ padding:10px 20px; border-radius:8px; border:none; background:#3b6ef0; color:#fff; font-weight:600; cursor:pointer; font-size:14px; }
   button:disabled{ opacity:.5; cursor:default; }
   table{ width:100%; border-collapse:collapse; margin-top:16px; }
@@ -327,6 +399,7 @@ app.get('/', (req, res) => {
     <div class="tab" id="tabRuajtura" onclick="ndryshoTab('ruajtura')">Bizneset e ruajtura</div>
     <div class="tab" id="tabShkarko" onclick="ndryshoTab('shkarko')">Shkarko</div>
     <div class="tab" id="tabBisedat" onclick="ndryshoTab('bisedat')">Bisedat</div>
+    <div class="tab" id="tabKompani" onclick="ndryshoTab('kompani')">Kompani te reja</div>
   </div>
 
   <div class="sec-panel aktiv" id="panelGjenerim">
@@ -408,6 +481,26 @@ app.get('/', (req, res) => {
     <div id="bisRez"></div>
   </div>
 
+  <div class="sec-panel" id="panelKompani">
+    <p class="mut">Gjen kompani te themeluara rishtas permes Crustdata. Ketu shfaqet vetem cfare kthen; asgje nuk ruhet dhe nuk gjendet email. Sipas dokumentimit, kerkimi kushton 0.03 kredite per rezultat, plus rreth 0.1 per filtrin e industrise dhe 0.2 per filtrin e punonjesve. Kostoja e sakte shfaqet pas cdo kerkese.</p>
+    <div class="row">
+      <div class="fusha"><span>Themeluar nga viti (perfshire)</span><input type="number" id="kompViti" value="2025" min="1990" max="2030" style="width:150px;" oninput="kompVleresim()" /></div>
+      <div class="fusha"><span>Industria (opsionale)</span><input type="text" id="kompIndustria" value="Software Development" style="width:230px; flex:none; min-width:0;" oninput="kompVleresim()" /></div>
+      <div class="fusha"><span>Shteti (opsionale)</span><input type="text" id="kompShteti" placeholder="p.sh. USA" style="width:120px; flex:none; min-width:0;" /></div>
+      <div class="fusha"><span>Maks. punonjes (opsionale)</span><input type="number" id="kompMaks" placeholder="p.sh. 50" min="1" style="width:150px;" oninput="kompVleresim()" /></div>
+      <div class="fusha"><span>Sa rezultate</span><select id="kompLimit" onchange="kompVleresim()"><option value="5">5</option><option value="10" selected>10</option><option value="20">20</option><option value="50">50</option></select></div>
+    </div>
+    <div class="row">
+      <button onclick="kompKerko(this)">Kerko te Crustdata</button>
+      <button onclick="kompSugjerime(this)" style="background:#2a313c;">Sugjerime industrie (falas)</button>
+      <button onclick="kompKredite(this)" style="background:#2a313c;">Kreditet e mbetura (falas)</button>
+      <span id="kompKoste" style="font-size:13px; color:#8b949e; align-self:center;"></span>
+    </div>
+    <div id="kompSugj" style="margin-bottom:8px;"></div>
+    <div id="kompStat" style="font-size:13px; color:#8b949e; margin-bottom:12px;"></div>
+    <div id="kompRez"></div>
+  </div>
+
 </div>
 <script>
 var pollTimer = null;
@@ -416,10 +509,13 @@ function ndryshoTab(cila){
   document.getElementById('tabRuajtura').className = cila === 'ruajtura' ? 'tab aktiv' : 'tab';
   document.getElementById('tabShkarko').className = cila === 'shkarko' ? 'tab aktiv' : 'tab';
   document.getElementById('tabBisedat').className = cila === 'bisedat' ? 'tab aktiv' : 'tab';
+  document.getElementById('tabKompani').className = cila === 'kompani' ? 'tab aktiv' : 'tab';
   document.getElementById('panelGjenerim').className = cila === 'gjenerim' ? 'sec-panel aktiv' : 'sec-panel';
   document.getElementById('panelRuajtura').className = cila === 'ruajtura' ? 'sec-panel aktiv' : 'sec-panel';
   document.getElementById('panelShkarko').className = cila === 'shkarko' ? 'sec-panel aktiv' : 'sec-panel';
   document.getElementById('panelBisedat').className = cila === 'bisedat' ? 'sec-panel aktiv' : 'sec-panel';
+  document.getElementById('panelKompani').className = cila === 'kompani' ? 'sec-panel aktiv' : 'sec-panel';
+  if(cila === 'kompani'){ kompVleresim(); }
   if(cila === 'ruajtura'){ ngarkoKategorite('filterKategoria'); shikoTeGjitha(); }
   if(cila === 'shkarko'){ ngarkoKategorite('shkarkoKategoria'); }
 }
@@ -486,6 +582,108 @@ function bisShfaq(lista){
     pre.textContent = JSON.stringify(x.raw, null, 2);
     det.appendChild(sum); det.appendChild(pre); kuti.appendChild(det);
     rez.appendChild(kuti);
+  });
+}
+function kompVleresim(){
+  var lim = parseInt(document.getElementById('kompLimit').value, 10) || 10;
+  var cmim = 0.03;
+  if(document.getElementById('kompIndustria').value.trim()){ cmim += 0.1; }
+  if(parseInt(document.getElementById('kompMaks').value, 10) > 0){ cmim += 0.2; }
+  document.getElementById('kompKoste').textContent = 'Kosto maksimale e vleresuar: rreth ' + (lim * cmim).toFixed(2) + ' kredite (cmimet e listes ne dokumentim)';
+}
+async function kompKredite(btn){
+  var stat = document.getElementById('kompStat');
+  btn.disabled = true; stat.textContent = 'Po kontrolloj...';
+  try{
+    var r = await fetch('/api/kompani-reja/kredite');
+    var d = await r.json();
+    stat.textContent = d.error ? ('Gabim: ' + d.error) : ('Kredite te mbetura: ' + d.kredite);
+  }catch(e){ stat.textContent = 'Gabim rrjeti: ' + e.message; }
+  btn.disabled = false;
+}
+async function kompSugjerime(btn){
+  var stat = document.getElementById('kompStat'), kuti = document.getElementById('kompSugj');
+  btn.disabled = true; stat.textContent = 'Po kerkoj vlera te industrise...'; kuti.innerHTML = '';
+  try{
+    var r = await fetch('/api/kompani-reja/sugjerime', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ teksti: document.getElementById('kompIndustria').value }) });
+    var d = await r.json();
+    if(d.error){ stat.textContent = 'Gabim: ' + d.error; }
+    else if(!d.sugjerime.length){ stat.textContent = 'Asnje sugjerim per kete tekst. Provo nje fjale me te shkurter.'; }
+    else {
+      stat.textContent = 'Kliko nje vlere per ta vendosur te Industria:';
+      d.sugjerime.forEach(function(v){
+        var chip = document.createElement('button'); chip.className = 'kompChip'; chip.textContent = v;
+        chip.onclick = function(){ document.getElementById('kompIndustria').value = v; kompVleresim(); };
+        kuti.appendChild(chip); kuti.appendChild(document.createTextNode(' '));
+      });
+    }
+  }catch(e){ stat.textContent = 'Gabim rrjeti: ' + e.message; }
+  btn.disabled = false;
+}
+async function kompKerko(btn){
+  var stat = document.getElementById('kompStat'), rez = document.getElementById('kompRez');
+  var trupi = {
+    viti: document.getElementById('kompViti').value,
+    industria: document.getElementById('kompIndustria').value.trim(),
+    shteti: document.getElementById('kompShteti').value.trim(),
+    maksPunonjes: document.getElementById('kompMaks').value,
+    limit: document.getElementById('kompLimit').value
+  };
+  btn.disabled = true; stat.textContent = 'Po kerkoj te Crustdata...'; rez.innerHTML = '';
+  try{
+    var r = await fetch('/api/kompani-reja/kerko', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(trupi) });
+    var d = await r.json();
+    if(d.error){ stat.textContent = 'Gabim: ' + d.error; }
+    else { stat.textContent = ''; kompShfaq(d); }
+  }catch(e){ stat.textContent = 'Gabim rrjeti: ' + e.message; }
+  btn.disabled = false;
+}
+function kompCel(tr, tekst, href){
+  var td = document.createElement('td');
+  if(href && (href.indexOf('http://') === 0 || href.indexOf('https://') === 0)){
+    var a = document.createElement('a'); a.textContent = tekst; a.href = href; a.target = '_blank'; a.rel = 'noopener noreferrer'; td.appendChild(a);
+  } else { td.textContent = tekst || ''; }
+  tr.appendChild(td);
+}
+function kompShfaq(d){
+  var rez = document.getElementById('kompRez'); rez.innerHTML = '';
+  var permbledhje = document.createElement('div');
+  permbledhje.style.cssText = 'font-size:13px; color:#3fb950; font-weight:600; margin-bottom:6px;';
+  permbledhje.textContent = d.kompanite.length + ' rezultate' + (d.total_count != null ? (' nga ' + d.total_count + ' qe perputhen gjithsej') : '') +
+    ' | kredite te shpenzuara: ' + (d.kredite_perdorur != null ? d.kredite_perdorur : 'e panjohur') + ' | renditja: ' + d.renditja;
+  rez.appendChild(permbledhje);
+  if(!d.kompanite.length){
+    var bosh = document.createElement('div'); bosh.style.cssText = 'font-size:13px; color:#8b949e;';
+    bosh.textContent = 'Asnje rezultat. Provo pa industri, ose me nje vlere nga Sugjerime industrie.';
+    rez.appendChild(bosh);
+  }
+  else {
+    var tbl = document.createElement('table');
+    var thead = document.createElement('thead'), hr = document.createElement('tr');
+    ['Emri', 'Domain', 'Viti', 'Punonjes', 'Shteti', 'LinkedIn', 'X'].forEach(function(t){ var th = document.createElement('th'); th.textContent = t; hr.appendChild(th); });
+    thead.appendChild(hr); tbl.appendChild(thead);
+    var tbody = document.createElement('tbody');
+    d.kompanite.forEach(function(k){
+      var tr = document.createElement('tr');
+      var sigurt = k.domain && /^[a-z0-9.-]+$/i.test(k.domain) ? ('https://' + k.domain) : null;
+      kompCel(tr, k.emri || '(pa emer)', null);
+      var webOk = k.website && (k.website.indexOf('http://') === 0 || k.website.indexOf('https://') === 0);
+      kompCel(tr, k.domain || k.website || '', webOk ? k.website : sigurt);
+      kompCel(tr, k.viti != null ? String(k.viti) : '', null);
+      kompCel(tr, k.punonjes || '', null);
+      kompCel(tr, k.shteti || '', null);
+      kompCel(tr, k.linkedin ? 'LinkedIn' : '', k.linkedin);
+      kompCel(tr, k.twitter ? 'X' : '', k.twitter);
+      tbody.appendChild(tr);
+    });
+    tbl.appendChild(tbody); rez.appendChild(tbl);
+  }
+  [['Kerkesa e derguar te Crustdata', d.kerkesa], ['JSON i plote nga Crustdata', d.raw]].forEach(function(p){
+    var det = document.createElement('details'); det.style.cssText = 'margin-top:14px;';
+    var sum = document.createElement('summary'); sum.textContent = p[0]; sum.style.cssText = 'cursor:pointer; font-size:12px; color:#8b949e;';
+    var pre = document.createElement('pre'); pre.style.cssText = 'max-height:320px; overflow:auto; font-size:11px; background:#0e1116; padding:10px; border-radius:6px; margin-top:8px;';
+    pre.textContent = JSON.stringify(p[1], null, 2);
+    det.appendChild(sum); det.appendChild(pre); rez.appendChild(det);
   });
 }
 function tekstArsyeja(a){
@@ -847,6 +1045,53 @@ app.post('/api/bisedat/kerko', async (req, res) => {
     } catch (e) { return { q, qFinal, ok: false, error: e.message, organic: [] }; }
   }));
   res.json({ ok: true, koha, faqet, rezultatet });
+});
+
+// ---- KOMPANI TE REJA ----
+app.post('/api/kompani-reja/kerko', async (req, res) => {
+  if (!CRUSTDATA_KEY) return res.status(400).json({ error: 'CRUSTDATA_API_KEY mungon te Railway → Variables.' });
+  const b = req.body || {};
+  const vitiAkt = new Date().getFullYear();
+  const viti = parseInt(b.viti, 10);
+  if (!Number.isInteger(viti) || viti < 1990 || viti > vitiAkt + 1) {
+    return res.status(400).json({ error: 'Viti i themelimit duhet te jete nje numer midis 1990 dhe ' + (vitiAkt + 1) + '.' });
+  }
+  const industria = String(b.industria || '').trim().slice(0, 100);
+  const shteti = String(b.shteti || '').trim().slice(0, 60);
+  const maks = parseInt(b.maksPunonjes, 10);
+  const maksPunonjes = Number.isInteger(maks) && maks > 0 && maks <= 1000000 ? maks : null;
+  const limit = Math.min(50, Math.max(1, parseInt(b.limit, 10) || 10)); // kufi i fortë 50, per te mbrojtur kreditet
+  const trupiBaze = { filters: ndertoFiltratKompani({ viti, industria, shteti, maksPunonjes }), fields: FUSHAT_KOMPANI, limit };
+  try {
+    const { r, perdorur } = await kerkoKompani(trupiBaze);
+    if (!r.ok) return res.status([400, 401, 403, 429].includes(r.status) ? r.status : 502).json({ error: mesazhGabimiCrustdata(r), kredite_perdorur: r.kredite });
+    const kompanite = (Array.isArray(r.data.companies) ? r.data.companies : []).map(sheshoKompanine);
+    res.json({
+      ok: true, kerkesa: perdorur.trupi, renditja: perdorur.sorts, kredite_perdorur: r.kredite,
+      total_count: r.data.total_count == null ? null : r.data.total_count, kompanite, raw: r.data
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/kompani-reja/kredite', async (req, res) => {
+  if (!CRUSTDATA_KEY) return res.status(400).json({ error: 'CRUSTDATA_API_KEY mungon te Railway → Variables.' });
+  try {
+    const r = await crustdataThirr('GET', '/user/credits', null); // falas, nuk shpenzon kredite
+    if (!r.ok) return res.status([401, 403, 429].includes(r.status) ? r.status : 502).json({ error: mesazhGabimiCrustdata(r) });
+    res.json({ ok: true, kredite: r.data.credits == null ? null : r.data.credits });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/kompani-reja/sugjerime', async (req, res) => {
+  if (!CRUSTDATA_KEY) return res.status(400).json({ error: 'CRUSTDATA_API_KEY mungon te Railway → Variables.' });
+  const teksti = String((req.body && req.body.teksti) || '').trim().slice(0, 60);
+  try {
+    // Autocomplete eshte falas; kthen vlerat e sakta te industrise, qe filtri te mos jape zero rezultate nga nje emer i gabuar.
+    const r = await crustdataThirr('POST', '/company/search/autocomplete', { field: 'taxonomy.professional_network_industry', query: teksti, limit: 15 });
+    if (!r.ok) return res.status([400, 401, 403, 429].includes(r.status) ? r.status : 502).json({ error: mesazhGabimiCrustdata(r) });
+    const sugjerime = (Array.isArray(r.data.suggestions) ? r.data.suggestions : []).map(s => s && s.value).filter(v => typeof v === 'string');
+    res.json({ ok: true, sugjerime });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 const PORT = process.env.PORT || 3000;
