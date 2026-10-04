@@ -323,7 +323,13 @@ function mesazhGabimiCrustdata(r) {
 
 // Operatoret sipas dokumentimit: "=>" eshte >= (jo ">="), "=<" eshte <=, "(.)" eshte perputhje e perafert e fjaleve.
 function ndertoFiltratKompani(p) {
-  const kushte = [{ field: 'basic_info.year_founded', type: '=>', value: p.viti }];
+  // Kufi i siperm per vitin: pa te, vlera te pavlefshme ne bazen e Crustdata (p.sh. 3027, 4202) dalin te para ne renditjen
+  // sipas vitit. Kerkohet edhe nje faqe interneti, sepse pa te s'ka si te kontaktohet kompania.
+  const kushte = [
+    { field: 'basic_info.year_founded', type: '=>', value: p.viti },
+    { field: 'basic_info.year_founded', type: '=<', value: p.vitiMax },
+    { field: 'basic_info.primary_domain', type: 'is_not_null', value: null }
+  ];
   if (p.industria) kushte.push({ field: 'taxonomy.professional_network_industry', type: '(.)', value: p.industria });
   if (p.shteti) kushte.push({ field: 'locations.country', type: '=', value: p.shteti });
   if (p.maksPunonjes) kushte.push({ field: 'headcount.total', type: '=<', value: p.maksPunonjes });
@@ -1053,15 +1059,15 @@ app.post('/api/kompani-reja/kerko', async (req, res) => {
   const b = req.body || {};
   const vitiAkt = new Date().getFullYear();
   const viti = parseInt(b.viti, 10);
-  if (!Number.isInteger(viti) || viti < 1990 || viti > vitiAkt + 1) {
-    return res.status(400).json({ error: 'Viti i themelimit duhet te jete nje numer midis 1990 dhe ' + (vitiAkt + 1) + '.' });
+  if (!Number.isInteger(viti) || viti < 1990 || viti > vitiAkt) {
+    return res.status(400).json({ error: 'Viti i themelimit duhet te jete nje numer midis 1990 dhe ' + vitiAkt + '.' });
   }
   const industria = String(b.industria || '').trim().slice(0, 100);
   const shteti = String(b.shteti || '').trim().slice(0, 60);
   const maks = parseInt(b.maksPunonjes, 10);
   const maksPunonjes = Number.isInteger(maks) && maks > 0 && maks <= 1000000 ? maks : null;
   const limit = Math.min(50, Math.max(1, parseInt(b.limit, 10) || 10)); // kufi i fortë 50, per te mbrojtur kreditet
-  const trupiBaze = { filters: ndertoFiltratKompani({ viti, industria, shteti, maksPunonjes }), fields: FUSHAT_KOMPANI, limit };
+  const trupiBaze = { filters: ndertoFiltratKompani({ viti, vitiMax: vitiAkt, industria, shteti, maksPunonjes }), fields: FUSHAT_KOMPANI, limit };
   try {
     const { r, perdorur } = await kerkoKompani(trupiBaze);
     if (!r.ok) return res.status([400, 401, 403, 429].includes(r.status) ? r.status : 502).json({ error: mesazhGabimiCrustdata(r), kredite_perdorur: r.kredite });
