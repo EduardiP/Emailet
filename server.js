@@ -23,6 +23,12 @@ pool.query(`CREATE TABLE IF NOT EXISTS bizneset_gjetur (
   gjetur_at TIMESTAMPTZ DEFAULT now()
 )`).catch(e => console.error('migrim:', e.message));
 pool.query(`ALTER TABLE bizneset_gjetur ADD COLUMN IF NOT EXISTS email_statusi TEXT`).catch(e => console.error('migrim email_statusi:', e.message));
+// Historiku i kompanive qe tab-i "Kompani te reja" ia ka treguar tashme perdoruesit, qe te mos i dale dy here.
+pool.query(`CREATE TABLE IF NOT EXISTS kompani_pare (
+  domain TEXT PRIMARY KEY,
+  emri TEXT,
+  gjetur_at TIMESTAMPTZ DEFAULT now()
+)`).catch(e => console.error('migrim kompani_pare:', e.message));
 
 function domainNga(url) {
   try {
@@ -330,10 +336,46 @@ function ndertoFiltratKompani(p) {
     { field: 'basic_info.year_founded', type: '=<', value: p.vitiMax },
     { field: 'basic_info.primary_domain', type: 'is_not_null', value: null }
   ];
+  if (p.perjashto && p.perjashto.length) kushte.push({ field: 'basic_info.primary_domain', type: 'not_in', value: p.perjashto });
   if (p.industria) kushte.push({ field: 'taxonomy.professional_network_industry', type: '(.)', value: p.industria });
   if (p.shteti) kushte.push({ field: 'locations.country', type: '=', value: p.shteti });
   if (p.maksPunonjes) kushte.push({ field: 'headcount.total', type: '=<', value: p.maksPunonjes });
   return kushte.length === 1 ? kushte[0] : { op: 'and', conditions: kushte };
+}
+
+function normalizoDomain(d) { return String(d || '').trim().toLowerCase().replace(/^www\./, ''); }
+
+// Domain-et qe nuk duhet te dalin serish: ato qe ky tab ia ka treguar me pare perdoruesit + ato te ruajtura nga Exa ose manualisht.
+// Kufi 5,000: sipas dokumentimit te Crustdata nje liste "not_in" deri ne ~5,000-10,000 vlera kthehet shpejt.
+// Te vogla (lowercase) sepse per liste mbi 100 vlera krahasimi eshte i ndjeshem ndaj shkronjave.
+async function merrDomainetePara() {
+  const kufi = 5000;
+  const teGjitha = new Set();
+  const pare = await pool.query('SELECT domain FROM kompani_pare ORDER BY gjetur_at DESC LIMIT ' + kufi);
+  pare.rows.forEach(r => { const d = normalizoDomain(r.domain); if (d) teGjitha.add(d); });
+  const ruajtura = await pool.query('SELECT domain FROM bizneset_gjetur');
+  ruajtura.rows.forEach(r => { const d = normalizoDomain(r.domain); if (d) teGjitha.add(d); });
+  return Array.from(teGjitha).slice(0, kufi);
+}
+
+async function ruajDomainetePara(kompanite) {
+  const domainet = [], emrat = [], pare = new Set();
+  for (const k of kompanite) {
+    const d = normalizoDomain(k.domain);
+    if (!d || pare.has(d)) continue;
+    pare.add(d); domainet.push(d); emrat.push(k.emri || '');
+  }
+  if (!domainet.length) return 0;
+  await pool.query('INSERT INTO kompani_pare (domain, emri) SELECT * FROM UNNEST($1::text[], $2::text[]) ON CONFLICT (domain) DO NOTHING', [domainet, emrat]);
+  return domainet.length;
+}
+
+// Kerkesa qe i kthehet faqes per shfaqje: lista e gjate e domain-eve te perjashtuara zevendesohet me nje permbledhje.
+function kerkesePerShfaqje(trupi) {
+  const kopje = JSON.parse(JSON.stringify(trupi));
+  const trego = k => { if (k && k.type === 'not_in' && Array.isArray(k.value)) k.value = '[' + k.value.length + ' domain-e te perjashtuara]'; };
+  if (kopje.filters) { trego(kopje.filters); (kopje.filters.conditions || []).forEach(trego); }
+  return kopje;
 }
 
 function sheshoKompanine(c) {
@@ -493,7 +535,7 @@ app.get('/', (req, res) => {
   </div>
 
   <div class="sec-panel" id="panelKompani">
-    <p class="mut">Gjen kompani te themeluara rishtas permes Crustdata. Ketu shfaqet vetem cfare kthen; asgje nuk ruhet dhe nuk gjendet email. Sipas dokumentimit, kerkimi kushton 0.03 kredite per rezultat, plus rreth 0.1 per filtrin e industrise dhe 0.2 per filtrin e punonjesve. Kostoja e sakte shfaqet pas cdo kerkese. Fusha "Fjale kyce" kerkon sipas kuptimit (jo vetem sipas etiketes se industrise) dhe, kur eshte e mbushur, i rendit rezultatet sipas perputhjes, jo sipas vitit; filtrat e tjere mbeten kushte te forta.</p>
+    <p class="mut">Gjen kompani te themeluara rishtas permes Crustdata. Ketu shfaqet vetem cfare kthen; ruhet vetem lista e domain-eve qe te jane dhene (qe te mos te dalin dy here); nuk gjendet email. Sipas dokumentimit, kerkimi kushton 0.03 kredite per rezultat, plus rreth 0.1 per filtrin e industrise dhe 0.2 per filtrin e punonjesve. Kostoja e sakte shfaqet pas cdo kerkese. Fusha "Fjale kyce" kerkon sipas kuptimit (jo vetem sipas etiketes se industrise) dhe, kur eshte e mbushur, i rendit rezultatet sipas perputhjes, jo sipas vitit; filtrat e tjere mbeten kushte te forta.</p>
     <div class="row">
       <div class="fusha"><span>Themeluar nga viti (perfshire)</span><input type="number" id="kompViti" value="2025" min="1990" max="2030" style="width:150px;" oninput="kompVleresim()" /></div>
       <div class="fusha"><span>Industria (opsionale)</span><input type="text" id="kompIndustria" value="Software Development" style="width:230px; flex:none; min-width:0;" oninput="kompVleresim()" /></div>
@@ -507,6 +549,10 @@ app.get('/', (req, res) => {
       <button onclick="kompSugjerime(this)" style="background:#2a313c;">Sugjerime industrie (falas)</button>
       <button onclick="kompKredite(this)" style="background:#2a313c;">Kreditet e mbetura (falas)</button>
       <span id="kompKoste" style="font-size:13px; color:#8b949e; align-self:center;"></span>
+    </div>
+    <div class="row">
+      <label class="bisChk"><input type="checkbox" id="kompFshih" checked /> Fshih kompanite qe te jane dhene me pare</label>
+      <button onclick="kompPastro(this)" style="background:#2a313c;">Pastro historikun</button>
     </div>
     <div id="kompSugj" style="margin-bottom:8px;"></div>
     <div id="kompStat" style="font-size:13px; color:#8b949e; margin-bottom:12px;"></div>
@@ -640,14 +686,26 @@ async function kompKerko(btn){
     pershkrim: document.getElementById('kompPershkrim').value.trim(),
     shteti: document.getElementById('kompShteti').value.trim(),
     maksPunonjes: document.getElementById('kompMaks').value,
-    limit: document.getElementById('kompLimit').value
+    limit: document.getElementById('kompLimit').value,
+    fshihTePara: document.getElementById('kompFshih').checked
   };
   btn.disabled = true; stat.textContent = 'Po kerkoj te Crustdata...'; rez.innerHTML = '';
   try{
     var r = await fetch('/api/kompani-reja/kerko', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(trupi) });
     var d = await r.json();
     if(d.error){ stat.textContent = 'Gabim: ' + d.error; }
-    else { stat.textContent = ''; kompShfaq(d); }
+    else { stat.textContent = d.paralajmerim ? ('Kujdes: ' + d.paralajmerim) : ''; kompShfaq(d); }
+  }catch(e){ stat.textContent = 'Gabim rrjeti: ' + e.message; }
+  btn.disabled = false;
+}
+async function kompPastro(btn){
+  var stat = document.getElementById('kompStat');
+  if(!confirm('Te fshij historikun e kompanive te treguara? Kerkimi i radhes mund te te shfaqe serish ato qe i ke pare.')){ return; }
+  btn.disabled = true; stat.textContent = 'Po pastroj...';
+  try{
+    var r = await fetch('/api/kompani-reja/pastro', { method:'POST' });
+    var d = await r.json();
+    stat.textContent = d.error ? ('Gabim: ' + d.error) : 'Historiku u pastrua.';
   }catch(e){ stat.textContent = 'Gabim rrjeti: ' + e.message; }
   btn.disabled = false;
 }
@@ -663,7 +721,7 @@ function kompShfaq(d){
   var permbledhje = document.createElement('div');
   permbledhje.style.cssText = 'font-size:13px; color:#3fb950; font-weight:600; margin-bottom:6px;';
   permbledhje.textContent = d.kompanite.length + ' rezultate' + (d.total_count != null ? (' nga ' + d.total_count + ' qe perputhen gjithsej') : '') +
-    ' | kredite te shpenzuara: ' + (d.kredite_perdorur != null ? d.kredite_perdorur : 'e panjohur') + ' | renditja: ' + d.renditja;
+    ' | kredite te shpenzuara: ' + (d.kredite_perdorur != null ? d.kredite_perdorur : 'e panjohur') + ' | renditja: ' + d.renditja + (d.te_pare ? ' | u perjashtuan ' + d.te_pare + ' te pare me pare' : '');
   rez.appendChild(permbledhje);
   if(!d.kompanite.length){
     var bosh = document.createElement('div'); bosh.style.cssText = 'font-size:13px; color:#8b949e;';
@@ -1075,16 +1133,32 @@ app.post('/api/kompani-reja/kerko', async (req, res) => {
   const maks = parseInt(b.maksPunonjes, 10);
   const maksPunonjes = Number.isInteger(maks) && maks > 0 && maks <= 1000000 ? maks : null;
   const limit = Math.min(50, Math.max(1, parseInt(b.limit, 10) || 10)); // kufi i fortë 50, per te mbrojtur kreditet
-  const trupiBaze = { filters: ndertoFiltratKompani({ viti, vitiMax: vitiAkt, industria, shteti, maksPunonjes }), fields: FUSHAT_KOMPANI, limit };
+  const fshihTePara = b.fshihTePara !== false; // paracaktuar: po
+  let perjashto = [], paralajmerim = null;
+  if (fshihTePara) {
+    try { perjashto = await merrDomainetePara(); }
+    catch (e) { paralajmerim = 'Historiku nuk u lexua (' + e.message + '); kerkimi u be pa perjashtim.'; }
+  }
+  const trupiBaze = { filters: ndertoFiltratKompani({ viti, vitiMax: vitiAkt, industria, shteti, maksPunonjes, perjashto }), fields: FUSHAT_KOMPANI, limit };
   if (pershkrim) trupiBaze.search = { query: pershkrim, mode: 'hybrid' }; // sipas dokumentimit: filtrat mbeten kushte te forta, renditja eshte sipas perputhjes
   try {
     const { r, perdorur } = await kerkoKompani(trupiBaze);
     if (!r.ok) return res.status([400, 401, 403, 429].includes(r.status) ? r.status : 502).json({ error: mesazhGabimiCrustdata(r), kredite_perdorur: r.kredite });
     const kompanite = (Array.isArray(r.data.companies) ? r.data.companies : []).map(sheshoKompanine);
+    try { await ruajDomainetePara(kompanite); } // ruhen gjithmone, qe perjashtimi te funksionoje kur te ndezet
+    catch (e) { paralajmerim = (paralajmerim ? paralajmerim + ' ' : '') + 'Historiku nuk u ruajt (' + e.message + ').'; }
     res.json({
-      ok: true, kerkesa: perdorur.trupi, renditja: perdorur.sorts, kredite_perdorur: r.kredite,
-      total_count: r.data.total_count == null ? null : r.data.total_count, kompanite, raw: r.data
+      ok: true, kerkesa: kerkesePerShfaqje(perdorur.trupi), renditja: perdorur.sorts, kredite_perdorur: r.kredite,
+      total_count: r.data.total_count == null ? null : r.data.total_count, te_pare: fshihTePara ? perjashto.length : null,
+      paralajmerim, kompanite, raw: r.data
     });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/kompani-reja/pastro', async (req, res) => {
+  try {
+    const r = await pool.query('DELETE FROM kompani_pare'); // vetem historiku i ketij tab-i; bizneset e ruajtura nuk preken
+    res.json({ ok: true, fshire: r.rowCount == null ? null : r.rowCount });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
