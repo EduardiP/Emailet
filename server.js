@@ -1,5 +1,5 @@
 // Mjet zbulimi bizneseh — Exa API (zbulim) + OpenAI (filtrim AI) + Generect (email) + PostgreSQL.
-// Variabla mjedisi te kerkuara ne Railway: EXA_API_KEY, OPENAI_API_KEY, GENERECT_API_KEY, DATABASE_URL, SERPER_API_KEY (per tab-in Bisedat), CRUSTDATA_API_KEY (per tab-in Kompani te reja).
+// Variabla mjedisi te kerkuara ne Railway: EXA_API_KEY, OPENAI_API_KEY, GENERECT_API_KEY, DATABASE_URL, SERPER_API_KEY (per tab-in Bisedat), CRUSTDATA_API_KEY (per tab-in Kompani te reja), GOOGLE_ALERTS_FEEDS (per tab-in Alerte).
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -29,6 +29,18 @@ pool.query(`CREATE TABLE IF NOT EXISTS kompani_pare (
   emri TEXT,
   gjetur_at TIMESTAMPTZ DEFAULT now()
 )`).catch(e => console.error('migrim kompani_pare:', e.message));
+// Njoftimet e Google Alerts (nga feed-et RSS), per tab-in "Alerte".
+pool.query(`CREATE TABLE IF NOT EXISTS alerte_rezultate (
+  id SERIAL PRIMARY KEY,
+  url TEXT UNIQUE NOT NULL,
+  titulli TEXT,
+  fragmenti TEXT,
+  burimi TEXT,
+  alerti TEXT,
+  publikuar TIMESTAMPTZ,
+  gjetur_at TIMESTAMPTZ DEFAULT now(),
+  statusi TEXT DEFAULT 'i ri'
+)`).catch(e => console.error('migrim alerte_rezultate:', e.message));
 
 function domainNga(url) {
   try {
@@ -411,6 +423,126 @@ async function kerkoKompani(trupiBaze) {
   return { r, perdorur };
 }
 
+// ===== ALERTE: Google Alerts te dorezuara si RSS (Atom) feed =====
+// Variabel Railway: GOOGLE_ALERTS_FEEDS = adresat e feed-eve (https), te ndara me presje ose rresht te ri.
+// Ato jane sekrete (lidhen me llogarine Google) dhe nuk i kthehen kurre faqes. Ruhen vetem lidhja, titulli, copa e tekstit dhe data.
+const ALERTE_STATUSET = ['i ri', 'u pergjigj', 'e lashe'];
+const ALERTE_KOLONAT = 'id, url, titulli, fragmenti, burimi, alerti, publikuar, gjetur_at, statusi';
+const alerteGjendja = { fundit: null, feedet: 0, te_reja: 0, gabime: [] };
+let alertePoll = false;
+
+function alerteFeedet() {
+  return String(process.env.GOOGLE_ALERTS_FEEDS || '').split(/[\n,]+/).map(s => s.trim()).filter(s => /^https:\/\//i.test(s));
+}
+
+function dekodoXml(s) {
+  return String(s || '')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'")
+    .replace(/&#(\d+);/g, (m, n) => { try { return String.fromCodePoint(parseInt(n, 10)); } catch (e) { return ''; } })
+    .replace(/&amp;/g, '&');
+}
+
+// HTML i futur ne XML -> tekst i thjeshte. Etiketat hiqen pa hapesire, qe "I-<b>66</b>" te mbetet "I-66".
+function pastroTekstinAlerte(s) {
+  const pa = String(s || '').replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1');
+  return dekodoXml(dekodoXml(pa).replace(/<[^>]*>/g, '')).replace(/\s+/g, ' ').trim();
+}
+
+// Lidhjet ne feed jane te mbeshtjella nga Google (google.com/url?...&url=ADRESA_E_VERTETE). Kthen adresen e vertete.
+function demaskoUrlGoogle(href) {
+  try {
+    const u = new URL(dekodoXml(href));
+    if (/(^|\.)google\.[a-z.]+$/i.test(u.hostname) && u.pathname === '/url') {
+      const real = u.searchParams.get('url') || u.searchParams.get('q');
+      if (real && /^https?:\/\//i.test(real)) return real;
+    }
+    return /^https?:$/.test(u.protocol) ? u.toString() : null;
+  } catch (e) { return null; }
+}
+
+// Per te shmangur dublikatat: pa fragment (#), pa parametra utm_, pa "/" ne fund.
+function normalizoUrlAlerte(u) {
+  try {
+    const x = new URL(u);
+    x.hash = '';
+    Array.from(x.searchParams.keys()).forEach(k => { if (/^utm_/i.test(k)) x.searchParams.delete(k); });
+    let s = x.toString();
+    if (s.endsWith('/') && x.pathname !== '/') s = s.slice(0, -1);
+    return s;
+  } catch (e) { return null; }
+}
+
+// Lexon nje feed Atom te Google Alerts pa biblioteke XML (regex). Hyrjet pa lidhje te vlefshme anashkalohen.
+function lexoAtom(xml) {
+  const tekst = String(xml || '');
+  const fillimi = tekst.search(/<entry[\s>]/i);
+  const koka = fillimi === -1 ? tekst : tekst.slice(0, fillimi);
+  const titulliFeed = pastroTekstinAlerte((koka.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || '');
+  const alerti = titulliFeed.replace(/^Google Alert\s*-\s*/i, '');
+  const hyrjet = [];
+  (tekst.match(/<entry[\s>][\s\S]*?<\/entry>/gi) || []).forEach(h => {
+    const href = (h.match(/<link[^>]*\bhref=["']([^"']+)["']/i) || [])[1];
+    const url = href ? demaskoUrlGoogle(href) : null;
+    if (!url) return;
+    const titulli = pastroTekstinAlerte((h.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || '');
+    const fragmenti = pastroTekstinAlerte((h.match(/<content[^>]*>([\s\S]*?)<\/content>/i) || [])[1] || '');
+    const dataTekst = (h.match(/<published>\s*([^<]+?)\s*<\/published>/i) || h.match(/<updated>\s*([^<]+?)\s*<\/updated>/i) || [])[1];
+    const d = dataTekst ? new Date(dataTekst) : null;
+    let burimi = '';
+    try { burimi = new URL(url).hostname.replace(/^www\./, ''); } catch (e) { burimi = ''; }
+    hyrjet.push({ url, titulli, fragmenti, burimi, publikuar: d && !isNaN(d) ? d.toISOString() : null });
+  });
+  return { alerti, hyrjet };
+}
+
+// Ruan hyrjet e reja (dublikatet sipas URL-se anashkalohen nga baza). Kthen sa ishin vertet te reja.
+async function ruajHyrjetAlerte(hyrjet, alerti) {
+  const pare = new Set(), urls = [], titujt = [], fragmentet = [], burimet = [], alertet = [], datat = [];
+  for (const h of hyrjet) {
+    const u = normalizoUrlAlerte(h.url);
+    if (!u || pare.has(u)) continue;
+    pare.add(u); urls.push(u); titujt.push(h.titulli || ''); fragmentet.push(h.fragmenti || ''); burimet.push(h.burimi || ''); alertet.push(alerti || ''); datat.push(h.publikuar || null);
+  }
+  if (!urls.length) return 0;
+  const r = await pool.query(
+    'INSERT INTO alerte_rezultate (url, titulli, fragmenti, burimi, alerti, publikuar) SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::timestamptz[]) ON CONFLICT (url) DO NOTHING',
+    [urls, titujt, fragmentet, burimet, alertet, datat]);
+  return r.rowCount || 0;
+}
+
+async function lexoFeedetAlerte() {
+  const feedet = alerteFeedet();
+  const gjendje = { fundit: new Date().toISOString(), feedet: feedet.length, te_reja: 0, gabime: [] };
+  for (let i = 0; i < feedet.length; i++) {
+    try {
+      const r = await fetchMeKohe(feedet[i], { headers: { 'user-agent': 'Mozilla/5.0 (compatible; emailet)' } }, 20000);
+      if (!r.ok) { gjendje.gabime.push('Feed ' + (i + 1) + ': HTTP ' + r.status); continue; }
+      const { alerti, hyrjet } = lexoAtom(await r.text());
+      gjendje.te_reja += await ruajHyrjetAlerte(hyrjet, alerti);
+    } catch (e) {
+      // adresat e feed-eve jane sekrete: hiqen nga cdo mesazh gabimi
+      gjendje.gabime.push('Feed ' + (i + 1) + ': ' + String(e.message).replace(/https?:\/\/\S+/g, '[adrese]'));
+    }
+  }
+  Object.assign(alerteGjendja, gjendje);
+  return gjendje;
+}
+
+// Leximi automatik: 30 sekonda pas nisjes, pastaj cdo ALERTS_POLL_MINUTES minuta (paracaktim 60, minimum 5).
+function nisAlertePoll() {
+  if (!alerteFeedet().length) return;
+  const minuta = Math.max(5, parseInt(process.env.ALERTS_POLL_MINUTES, 10) || 60);
+  const ekzekuto = async () => {
+    if (alertePoll) return;
+    alertePoll = true;
+    try { await lexoFeedetAlerte(); }
+    catch (e) { console.error('alerte:', String(e.message).replace(/https?:\/\/\S+/g, '[adrese]')); }
+    finally { alertePoll = false; }
+  };
+  setTimeout(ekzekuto, 30 * 1000).unref();
+  setInterval(ekzekuto, minuta * 60 * 1000).unref();
+}
+
 app.get('/', (req, res) => {
   res.type('html').send(`<!DOCTYPE html>
 <html lang="sq"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -453,6 +585,7 @@ app.get('/', (req, res) => {
     <div class="tab" id="tabShkarko" onclick="ndryshoTab('shkarko')">Shkarko</div>
     <div class="tab" id="tabBisedat" onclick="ndryshoTab('bisedat')">Bisedat</div>
     <div class="tab" id="tabKompani" onclick="ndryshoTab('kompani')">Kompani te reja</div>
+    <div class="tab" id="tabAlerte" onclick="ndryshoTab('alerte')">Alerte</div>
   </div>
 
   <div class="sec-panel aktiv" id="panelGjenerim">
@@ -559,6 +692,22 @@ app.get('/', (req, res) => {
     <div id="kompRez"></div>
   </div>
 
+  <div class="sec-panel" id="panelAlerte">
+    <p class="mut">Njoftimet e Google Alerts (te dorezuara si RSS) shfaqen ketu. Aplikacioni i lexon vete rreth cdo ore; mund ta shtysh me butonin. Ruhen vetem lidhja, titulli, copa e tekstit dhe data. Hape lidhjen dhe lexo postimin vete; dhe shenoje qe te dihet ku je.</p>
+    <div class="row">
+      <button onclick="alerteRifresko(this)">Rifresko tani</button>
+      <select id="alerteFiltri" onchange="alerteNgarko()">
+        <option value="i ri">Te reja</option>
+        <option value="u pergjigj">U pergjigj</option>
+        <option value="e lashe">E lashe</option>
+        <option value="">Te gjitha</option>
+      </select>
+    </div>
+    <div id="alerteInfo" style="font-size:13px; color:#8b949e; margin-bottom:8px;"></div>
+    <div id="alerteStat" style="font-size:13px; color:#8b949e; margin-bottom:12px;"></div>
+    <div id="alerteRez"></div>
+  </div>
+
 </div>
 <script>
 var pollTimer = null;
@@ -568,12 +717,15 @@ function ndryshoTab(cila){
   document.getElementById('tabShkarko').className = cila === 'shkarko' ? 'tab aktiv' : 'tab';
   document.getElementById('tabBisedat').className = cila === 'bisedat' ? 'tab aktiv' : 'tab';
   document.getElementById('tabKompani').className = cila === 'kompani' ? 'tab aktiv' : 'tab';
+  document.getElementById('tabAlerte').className = cila === 'alerte' ? 'tab aktiv' : 'tab';
   document.getElementById('panelGjenerim').className = cila === 'gjenerim' ? 'sec-panel aktiv' : 'sec-panel';
   document.getElementById('panelRuajtura').className = cila === 'ruajtura' ? 'sec-panel aktiv' : 'sec-panel';
   document.getElementById('panelShkarko').className = cila === 'shkarko' ? 'sec-panel aktiv' : 'sec-panel';
   document.getElementById('panelBisedat').className = cila === 'bisedat' ? 'sec-panel aktiv' : 'sec-panel';
   document.getElementById('panelKompani').className = cila === 'kompani' ? 'sec-panel aktiv' : 'sec-panel';
   if(cila === 'kompani'){ kompVleresim(); }
+  document.getElementById('panelAlerte').className = cila === 'alerte' ? 'sec-panel aktiv' : 'sec-panel';
+  if(cila === 'alerte'){ alerteNgarko(); }
   if(cila === 'ruajtura'){ ngarkoKategorite('filterKategoria'); shikoTeGjitha(); }
   if(cila === 'shkarko'){ ngarkoKategorite('shkarkoKategoria'); }
 }
@@ -756,6 +908,86 @@ function kompShfaq(d){
     pre.textContent = JSON.stringify(p[1], null, 2);
     det.appendChild(sum); det.appendChild(pre); rez.appendChild(det);
   });
+}
+async function alerteNgarko(){
+  var stat = document.getElementById('alerteStat');
+  var filtri = document.getElementById('alerteFiltri').value;
+  stat.textContent = 'Po ngarkoj...';
+  try{
+    var r = await fetch('/api/alerte?statusi=' + encodeURIComponent(filtri) + '&limit=200');
+    var d = await r.json();
+    if(d.error){ stat.textContent = 'Gabim: ' + d.error; return; }
+    stat.textContent = '';
+    alerteShfaq(d);
+  }catch(e){ stat.textContent = 'Gabim rrjeti: ' + e.message; }
+}
+async function alerteRifresko(btn){
+  var stat = document.getElementById('alerteStat');
+  btn.disabled = true; stat.textContent = 'Po lexoj feed-et e Google Alerts...';
+  try{
+    var r = await fetch('/api/alerte/rifresko', { method:'POST' });
+    var d = await r.json();
+    if(d.error){ stat.textContent = 'Gabim: ' + d.error; }
+    else {
+      await alerteNgarko();
+      document.getElementById('alerteStat').textContent = 'U lexuan ' + d.feedet + ' feed, ' + d.te_reja + ' njoftime te reja' + (d.gabime.length ? (' | gabime: ' + d.gabime.join('; ')) : '') + '.';
+    }
+  }catch(e){ stat.textContent = 'Gabim rrjeti: ' + e.message; }
+  btn.disabled = false;
+}
+async function alerteStatusi(id, vlera){
+  var stat = document.getElementById('alerteStat');
+  try{
+    var r = await fetch('/api/alerte/statusi', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id: id, statusi: vlera }) });
+    var d = await r.json();
+    if(d.error){ stat.textContent = 'Gabim: ' + d.error; return; }
+  }catch(e){ stat.textContent = 'Gabim rrjeti: ' + e.message; return; }
+  alerteNgarko();
+}
+function alerteShfaq(d){
+  var rez = document.getElementById('alerteRez'); rez.innerHTML = '';
+  var g = d.gjendja || {};
+  document.getElementById('alerteInfo').textContent = d.feedet + ' feed te konfiguruar | te reja: ' + d.numrat['i ri'] + ' | u pergjigj: ' + d.numrat['u pergjigj'] +
+    ' | e lashe: ' + d.numrat['e lashe'] + ' | leximi i fundit: ' + (g.fundit ? g.fundit.slice(0, 16).replace('T', ' ') : 'ende jo');
+  if(!d.feedet){
+    var pa = document.createElement('div'); pa.style.cssText = 'font-size:13px; color:#d29922;';
+    pa.textContent = 'Asnje feed i konfiguruar. Vendos GOOGLE_ALERTS_FEEDS te Railway, Variables (adresa RSS e alertit).';
+    rez.appendChild(pa); return;
+  }
+  if(g.gabime && g.gabime.length){
+    var gb = document.createElement('div'); gb.style.cssText = 'font-size:13px; color:#f85149; margin-bottom:8px;';
+    gb.textContent = 'Gabime gjate leximit: ' + g.gabime.join('; ');
+    rez.appendChild(gb);
+  }
+  if(!d.rows.length){
+    var bosh = document.createElement('div'); bosh.style.cssText = 'font-size:13px; color:#8b949e;';
+    bosh.textContent = 'Asnje njoftim ketu. Nese sapo e ngrite, prit ose shtyp Rifresko tani.';
+    rez.appendChild(bosh); return;
+  }
+  var tbl = document.createElement('table');
+  var thead = document.createElement('thead'), hr = document.createElement('tr');
+  ['Titulli', 'Burimi', 'Copa e tekstit', 'Data', 'Statusi'].forEach(function(t){ var th = document.createElement('th'); th.textContent = t; hr.appendChild(th); });
+  thead.appendChild(hr); tbl.appendChild(thead);
+  var tbody = document.createElement('tbody');
+  d.rows.forEach(function(k){
+    var tr = document.createElement('tr');
+    var tdT = document.createElement('td');
+    if(k.url && (k.url.indexOf('http://') === 0 || k.url.indexOf('https://') === 0)){
+      var a = document.createElement('a'); a.textContent = k.titulli || k.url; a.href = k.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; tdT.appendChild(a);
+    } else { tdT.textContent = k.titulli || ''; }
+    tr.appendChild(tdT);
+    [k.burimi || '', (k.fragmenti || '').slice(0, 220), String(k.publikuar || k.gjetur_at || '').slice(0, 10)].forEach(function(t){
+      var td = document.createElement('td'); td.textContent = t; tr.appendChild(td);
+    });
+    var tdS = document.createElement('td'), sel = document.createElement('select');
+    [['i ri', 'I ri'], ['u pergjigj', 'U pergjigj'], ['e lashe', 'E lashe']].forEach(function(o){
+      var op = document.createElement('option'); op.value = o[0]; op.textContent = o[1]; if(o[0] === k.statusi){ op.selected = true; } sel.appendChild(op);
+    });
+    sel.onchange = function(){ alerteStatusi(k.id, sel.value); };
+    tdS.appendChild(sel); tr.appendChild(tdS);
+    tbody.appendChild(tr);
+  });
+  tbl.appendChild(tbody); rez.appendChild(tbl);
 }
 function tekstArsyeja(a){
   if(a === 'pa_kompani') return 'nuk u gjet kompania te Generect';
@@ -1183,5 +1415,39 @@ app.post('/api/kompani-reja/sugjerime', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ---- ALERTE ----
+app.get('/api/alerte', async (req, res) => {
+  try {
+    const q = req.query || {};
+    const statusi = ALERTE_STATUSET.includes(q.statusi) ? q.statusi : null;
+    const limit = Math.min(500, Math.max(1, parseInt(q.limit, 10) || 100));
+    const rows = statusi
+      ? (await pool.query('SELECT ' + ALERTE_KOLONAT + ' FROM alerte_rezultate WHERE statusi = $1 ORDER BY COALESCE(publikuar, gjetur_at) DESC, id DESC LIMIT $2', [statusi, limit])).rows
+      : (await pool.query('SELECT ' + ALERTE_KOLONAT + ' FROM alerte_rezultate ORDER BY COALESCE(publikuar, gjetur_at) DESC, id DESC LIMIT $1', [limit])).rows;
+    const numrimi = (await pool.query('SELECT statusi, COUNT(*)::int AS n FROM alerte_rezultate GROUP BY statusi')).rows;
+    const numrat = { 'i ri': 0, 'u pergjigj': 0, 'e lashe': 0 };
+    numrimi.forEach(r => { if (r.statusi in numrat) numrat[r.statusi] = r.n; });
+    res.json({ ok: true, rows, numrat, feedet: alerteFeedet().length, gjendja: alerteGjendja });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/alerte/rifresko', async (req, res) => {
+  if (!alerteFeedet().length) return res.status(400).json({ error: 'GOOGLE_ALERTS_FEEDS mungon te Railway → Variables.' });
+  try {
+    const g = await lexoFeedetAlerte();
+    res.json({ ok: true, feedet: g.feedet, te_reja: g.te_reja, gabime: g.gabime, fundit: g.fundit });
+  } catch (e) { res.status(500).json({ error: String(e.message).replace(/https?:\/\/\S+/g, '[adrese]') }); }
+});
+
+app.post('/api/alerte/statusi', async (req, res) => {
+  const b = req.body || {};
+  const id = parseInt(b.id, 10);
+  if (!Number.isInteger(id) || !ALERTE_STATUSET.includes(b.statusi)) return res.status(400).json({ error: 'Id ose status i pavlefshem.' });
+  try {
+    const r = await pool.query('UPDATE alerte_rezultate SET statusi = $1 WHERE id = $2', [b.statusi, id]);
+    res.json({ ok: true, ndryshuar: r.rowCount || 0 });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log('Zbulim Bizneseh po punon ne portin ' + PORT));
+app.listen(PORT, () => { console.log('Zbulim Bizneseh po punon ne portin ' + PORT); nisAlertePoll(); });
