@@ -191,17 +191,38 @@ function nxirrListeJSON(tekst) {
   catch (e) { return null; }
 }
 
+// AI-ja e shenon frazen kyce me <<...>> (pa thonjeza, qe JSON-i te mos prishet).
+// Ketu kthehet ne thonjeza te sakta, qe Google te detyrohet ta permbaje frazen.
+function kthejFrazatNeThonjeza(q) {
+  return q.replace(/<<\s*([^<>]+?)\s*>>/g, '"$1"').replace(/\s+/g, ' ').trim();
+}
+
+const SHEMBULL_AI = JSON.stringify([
+  '<<delivery app>> commission restaurant owner frustrated -agency -agencies',
+  'anyone <<delivery apps>> fees eating margins restaurant -agency -agencies',
+  '<<commission>> delivery platform looking for alternative restaurant -agency -agencies'
+]);
+
 async function formuloKerkesatMeAI(pershkrim, numri) {
   if (!OPENAI_KEY) throw new Error('OPENAI_API_KEY mungon te Railway → Variables.');
   const prompt =
-    'You convert a business owner\'s plain-language description of the online conversations they want to find ' +
-    'into Google search queries.\n' +
-    'Return ONLY a JSON array of ' + numri + ' strings: no prose, no code fences.\n' +
-    'Each query is a short, natural Google search (3-10 words) likely to surface forum threads, community posts or ' +
-    'discussions where real people express the need, problem, complaint or request that was described.\n' +
-    'Vary the angles (stating the problem, asking for recommendations, complaining about alternatives).\n' +
-    'Do not use quotes or the site: operator unless the description explicitly asks for specific sites.\n' +
-    'Write the queries in the language most likely used by the people posting (default: English).\n\n' +
+    'You turn a business owner\'s plain-language description into Google search queries that find real people\'s posts ' +
+    'in forums and communities (not articles).\n\n' +
+    'Rules:\n' +
+    '1. Identify the 1-2 core concepts of the description: the exact topic words a person would use when posting about it.\n' +
+    '2. EVERY query must contain at least one core concept wrapped in double angle brackets, like <<delivery app>>. ' +
+    'Never use quotation marks. The brackets are turned into an exact-match phrase, so Google must include it.\n' +
+    '3. Combine that phrase with plain words people use when posting: looking for, anyone, recommend, frustrated, ' +
+    'struggling, how do you, does anyone know.\n' +
+    '4. Do NOT write article-style queries. Avoid the words: best, top, guide, tips, strategies, tools list, 2026.\n' +
+    '5. Unless the description is about agencies, end every query with: -agency -agencies\n' +
+    '6. Each query has 3-10 words before the operators. Vary the angles (stating the problem, asking for recommendations, ' +
+    'looking for partners, complaining about alternatives).\n' +
+    '7. Never use the site: operator.\n' +
+    '8. Write the queries in the language most likely used by the people posting (default: English).\n\n' +
+    'Example. Description: restaurant owners complaining about delivery app commissions\n' +
+    'Output: ' + SHEMBULL_AI + '\n\n' +
+    'Return ONLY a JSON array of ' + numri + ' strings: no prose, no code fences.\n\n' +
     'Description: ' + pershkrim;
   const r = await fetchMeKohe('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
@@ -213,9 +234,23 @@ async function formuloKerkesatMeAI(pershkrim, numri) {
   const tekst = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
   const lista = nxirrListeJSON(tekst);
   if (!lista) throw new Error('AI nuk ktheu format te vlefshem. Provo perseri, ose shkruaj kerkesat vete.');
-  const pastro = Array.from(new Set(lista.filter(x => typeof x === 'string').map(x => x.trim()).filter(Boolean)));
+  const pastro = Array.from(new Set(lista.filter(x => typeof x === 'string').map(kthejFrazatNeThonjeza).filter(Boolean)));
   if (!pastro.length) throw new Error('AI nuk ktheu asnje kerkese. Provo perseri me pershkrim me te qarte.');
   return pastro.slice(0, numri);
+}
+
+// Faqet opsionale: pranon domain-e ose URL-e, i pastron dhe mban maksimumi 6.
+function pastroFaqet(lista) {
+  const dalja = [];
+  (Array.isArray(lista) ? lista : []).forEach(x => {
+    if (typeof x !== 'string') return;
+    const d = x.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0].split('?')[0];
+    if (/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?\.[a-z]{2,}$/.test(d) && !dalja.includes(d)) dalja.push(d);
+  });
+  return dalja.slice(0, 6);
+}
+function shtoFiltrinEFaqeve(q, faqet) {
+  return faqet.length ? q + ' (' + faqet.map(f => 'site:' + f).join(' OR ') + ')' : q;
 }
 
 async function kerkoSerper(q, koha) {
@@ -250,6 +285,8 @@ app.get('/', (req, res) => {
   input, select{ padding:10px 12px; border:1px solid #2a313c; border-radius:8px; background:#141b26; color:#e6edf3; font-size:14px; }
   input[type=text]{ flex:1; min-width:240px; }
   textarea{ width:100%; box-sizing:border-box; padding:10px 12px; border:1px solid #2a313c; border-radius:8px; background:#141b26; color:#e6edf3; font:14px/1.5 system-ui,sans-serif; resize:vertical; }
+  .bisChk{ display:inline-flex; align-items:center; gap:6px; margin:0 16px 8px 0; font-size:13px; color:#c9d1d9; cursor:pointer; }
+  .bisChk input{ width:16px; height:16px; padding:0; margin:0; accent-color:#3b6ef0; }
   button{ padding:10px 20px; border-radius:8px; border:none; background:#3b6ef0; color:#fff; font-weight:600; cursor:pointer; font-size:14px; }
   button:disabled{ opacity:.5; cursor:default; }
   table{ width:100%; border-collapse:collapse; margin-top:16px; }
@@ -326,17 +363,27 @@ app.get('/', (req, res) => {
     </div>
     <p class="mut" style="margin:16px 0 6px;">2. Kerkesat qe dergohen te Serper (nje per rresht, maksimumi 8; mund t'i ndryshosh ose t'i shkruash vete)</p>
     <textarea id="bisKer" rows="5" placeholder="Nje kerkese per rresht"></textarea>
-    <div class="row" style="margin-top:8px;">
+    <p class="mut" style="margin:14px 0 6px;">3. Faqet (opsionale): zgjidh ku te kerkohet. Asnje e zgjedhur = gjithe interneti. Maksimumi 6.</p>
+    <div>
+      <label class="bisChk"><input type="checkbox" class="bisFaqe" value="reddit.com"> Reddit</label>
+      <label class="bisChk"><input type="checkbox" class="bisFaqe" value="indiehackers.com"> Indie Hackers</label>
+      <label class="bisChk"><input type="checkbox" class="bisFaqe" value="news.ycombinator.com"> Hacker News</label>
+      <label class="bisChk"><input type="checkbox" class="bisFaqe" value="quora.com"> Quora</label>
+      <label class="bisChk"><input type="checkbox" class="bisFaqe" value="facebook.com"> Facebook</label>
+      <label class="bisChk"><input type="checkbox" class="bisFaqe" value="linkedin.com"> LinkedIn</label>
+    </div>
+    <input type="text" id="bisFaqeTjera" placeholder="Te tjera: domain-e te ndara me presje (p.sh. dev.to, lobste.rs)" style="width:100%; box-sizing:border-box; max-width:100%; margin-bottom:12px;" />
+    <div class="row">
       <select id="bisKoha">
-        <option value="d">24 oret e fundit</option>
-        <option value="w" selected>1 jave</option>
+        <option value="" selected>Cdo kohe</option>
         <option value="m">1 muaj</option>
-        <option value="">Cdo kohe</option>
+        <option value="w">1 jave</option>
+        <option value="d">24 oret e fundit</option>
       </select>
       <button onclick="bisKerko(this)">Kerko te Serper</button>
       <span id="bisKerStat" style="font-size:13px; color:#8b949e; align-self:center;"></span>
     </div>
-    <p class="mut" style="margin-bottom:16px;">Cdo rresht eshte 1 kerkese, rreth 1 kredit Serper (10 rezultate).</p>
+    <p class="mut" style="margin-bottom:16px;">Cdo rresht eshte 1 kerkese, rreth 1 kredit Serper (10 rezultate). Ne rezultate shihet kerkesa e sakte qe shkoi te Google.</p>
     <div id="bisRez"></div>
   </div>
 
@@ -377,9 +424,12 @@ async function bisKerko(btn){
   var kerkesat = document.getElementById('bisKer').value.split(String.fromCharCode(10)).map(function(x){ return x.trim(); }).filter(Boolean);
   if(!kerkesat.length){ stat.textContent = 'Shkruaj te pakten 1 kerkese.'; return; }
   if(kerkesat.length > 8){ stat.textContent = 'Maksimumi 8 kerkesa per here.'; return; }
+  var faqet = Array.prototype.slice.call(document.querySelectorAll('input.bisFaqe')).filter(function(c){ return c.checked; }).map(function(c){ return c.value; });
+  document.getElementById('bisFaqeTjera').value.split(',').forEach(function(x){ x = x.trim(); if(x){ faqet.push(x); } });
+  if(faqet.length > 6){ stat.textContent = 'Maksimumi 6 faqe per here.'; return; }
   btn.disabled = true; stat.textContent = 'Po kerkoj...'; rez.innerHTML = '';
   try{
-    var r = await fetch('/api/bisedat/kerko', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ kerkesat: kerkesat, koha: document.getElementById('bisKoha').value }) });
+    var r = await fetch('/api/bisedat/kerko', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ kerkesat: kerkesat, koha: document.getElementById('bisKoha').value, faqet: faqet }) });
     var d = await r.json();
     if(d.error){ stat.textContent = 'Gabim: ' + d.error; }
     else {
@@ -395,7 +445,7 @@ function bisShfaq(lista){
   lista.forEach(function(x){
     var kuti = document.createElement('div');
     kuti.style.cssText = 'border:1px solid #2a313c;border-radius:10px;margin-bottom:16px;overflow:hidden;';
-    kuti.appendChild(bisNje('padding:10px 14px;background:#161b22;font-size:13px;', 'Kerkesa: ' + x.q + (x.ok ? '  |  ' + x.organic.length + ' rezultate' : '')));
+    kuti.appendChild(bisNje('padding:10px 14px;background:#161b22;font-size:13px;', 'Kerkesa: ' + (x.qFinal || x.q) + (x.ok ? '  |  ' + x.organic.length + ' rezultate' : '')));
     if(!x.ok){ kuti.appendChild(bisNje('padding:12px 14px;color:#e5484d;font-size:13px;', 'Gabim: ' + x.error)); rez.appendChild(kuti); return; }
     if(!x.organic.length){ kuti.appendChild(bisNje('padding:12px 14px;font-size:13px;color:#8b949e;', 'Pa rezultate per kete kerkese.')); }
     x.organic.forEach(function(o){
@@ -763,17 +813,19 @@ app.post('/api/bisedat/kerko', async (req, res) => {
   if (!kerkesat.length) return res.status(400).json({ error: 'Shkruaj te pakten 1 kerkese.' });
   if (!SERPER_KEY) return res.status(400).json({ error: 'SERPER_API_KEY mungon te Railway → Variables.' });
   const koha = KOHET_E_LEJUARA.includes(b.koha) ? b.koha : '';
+  const faqet = pastroFaqet(b.faqet);
   const rezultatet = await Promise.all(kerkesat.map(async q => {
+    const qFinal = shtoFiltrinEFaqeve(q, faqet); // kerkesa e sakte qe shkon te Google
     try {
-      const raw = await kerkoSerper(q, koha);
+      const raw = await kerkoSerper(qFinal, koha);
       const organic = (raw.organic || []).map(o => {
         let faqja = ''; try { faqja = new URL(o.link).hostname.replace(/^www\./, ''); } catch (e) {}
         return { pozicioni: o.position, titulli: o.title, linku: o.link, fragmenti: o.snippet, data: o.date || '', faqja };
       });
-      return { q, ok: true, organic, raw };
-    } catch (e) { return { q, ok: false, error: e.message, organic: [] }; }
+      return { q, qFinal, ok: true, organic, raw };
+    } catch (e) { return { q, qFinal, ok: false, error: e.message, organic: [] }; }
   }));
-  res.json({ ok: true, koha, rezultatet });
+  res.json({ ok: true, koha, faqet, rezultatet });
 });
 
 const PORT = process.env.PORT || 3000;
