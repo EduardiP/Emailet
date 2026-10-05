@@ -839,7 +839,7 @@ app.get('/', (req, res) => {
   <div class="sec-panel" id="panelRuajtura">
     <p class="mut">Vetem bizneset e pranuara (te reja), sipas kategorise se zgjedhur me poshte.</p>
     <div class="row" style="border:1px solid #2a313c; border-radius:8px; padding:10px; margin-bottom:16px;">
-      <input type="text" id="manEmail" placeholder="Email (p.sh. test1@gmail.com)" style="max-width:220px;" />
+      <input type="text" id="manEmail" placeholder="Email, ose gjithe lista (e ndare me ; ose ,)" style="max-width:320px;" />
       <input type="text" id="manEmri" placeholder="Emer (opsionale)" style="max-width:180px;" />
       <input type="text" id="manKategoria" placeholder="Kategori" value="emailet-e-proves" style="max-width:180px;" />
       <button onclick="shtoManualisht()">Shto manualisht</button>
@@ -1383,22 +1383,30 @@ function shkarkoCSV(){
   setTimeout(function(){ statusShkarko.textContent = ''; }, 2000);
 }
 async function shtoManualisht(){
-  var email = document.getElementById('manEmail').value.trim();
+  var fusha = document.getElementById('manEmail').value.trim();
   var emri = document.getElementById('manEmri').value.trim();
   var kategoria = document.getElementById('manKategoria').value.trim() || 'emailet-e-proves';
   var statusManual = document.getElementById('statusManual');
-  if(!email || !email.includes('@')){ statusManual.textContent = 'Shkruaj email te vlefshem.'; return; }
-  statusManual.textContent = 'Duke shtuar...';
-  try{
-    var r = await fetch('/api/shto-manualisht', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ email: email, emri: emri, kategoria: kategoria }) });
-    var d = await r.json();
-    if(d.error){ statusManual.textContent = 'Gabim: ' + d.error; return; }
-    statusManual.textContent = 'U shtua: ' + email;
+  // Mund te ngjitesh nje adrese, ose gjithe nje liste te ndare me ; ose , ose hapesire.
+  var adresat = fusha.split(/[; ,]+/).filter(function(x){ return x.indexOf('@') > 0; });
+  if(!adresat.length){ statusManual.textContent = 'Shkruaj email te vlefshem.'; return; }
+  var shume = adresat.length > 1, shtuar = 0, gabime = [], gabimiIFundit = '';
+  for(var i = 0; i < adresat.length; i++){
+    statusManual.textContent = 'Duke shtuar ' + (i + 1) + '/' + adresat.length + '...';
+    try{
+      var r = await fetch('/api/shto-manualisht', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ email: adresat[i], emri: shume ? adresat[i].split('@')[0] : emri, kategoria: kategoria }) });
+      var d = await r.json();
+      if(d.error){ gabimiIFundit = d.error; gabime.push(adresat[i] + ': ' + d.error); } else { shtuar++; }
+    }catch(e){ gabimiIFundit = e.message; gabime.push(adresat[i] + ': ' + e.message); }
+  }
+  if(shume){ statusManual.textContent = 'U shtuan ' + shtuar + ' nga ' + adresat.length + (gabime.length ? (' | gabime: ' + gabime.slice(0, 3).join('; ')) : ''); }
+  else { statusManual.textContent = shtuar ? ('U shtua: ' + adresat[0]) : ('Gabim: ' + gabimiIFundit); }
+  if(shtuar){
     document.getElementById('manEmail').value = '';
     document.getElementById('manEmri').value = '';
     ngarkoKategorite('filterKategoria');
     shikoTeGjitha();
-  }catch(e){ statusManual.textContent = 'Gabim: ' + e.message; }
+  }
 }
 async function shikoTeGjitha(){
   var status2 = document.getElementById('status2'), count2 = document.getElementById('count2');
