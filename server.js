@@ -61,7 +61,11 @@ pool.query(`CREATE TABLE IF NOT EXISTS alerte_rezultate (
   publikuar TIMESTAMPTZ,
   gjetur_at TIMESTAMPTZ DEFAULT now(),
   statusi TEXT DEFAULT 'i ri'
-)`).catch(e => console.error('migrim alerte_rezultate:', e.message));
+)`)
+  // alertet = TE GJITHA alertet qe e kane gjetur kete lidhje (alerti = i pari qe e gjeti). Rreshtat e vjeter mbushen nga alerti.
+  .then(() => pool.query(`ALTER TABLE alerte_rezultate ADD COLUMN IF NOT EXISTS alertet TEXT[] DEFAULT '{}'`))
+  .then(() => pool.query(`UPDATE alerte_rezultate SET alertet = ARRAY[alerti] WHERE COALESCE(cardinality(alertet), 0) = 0 AND COALESCE(alerti, '') <> ''`))
+  .catch(e => console.error('migrim alerte_rezultate:', e.message));
 
 function domainNga(url) {
   try {
@@ -713,15 +717,15 @@ async function kerkoKompani(trupiBaze) {
 }
 
 // ===== ALERTE: Google Alerts te dorezuara si RSS (Atom) feed =====
-// Variabel Railway: GOOGLE_ALERTS_FEEDS = adresat e feed-eve (https), te ndara me presje ose rresht te ri.
+// Variabel Railway: GOOGLE_ALERTS_FEEDS = adresat e feed-eve (https), te ndara me presje, pikepresje, hapesire ose rresht te ri.
 // Ato jane sekrete (lidhen me llogarine Google) dhe nuk i kthehen kurre faqes. Ruhen vetem lidhja, titulli, copa e tekstit dhe data.
 const ALERTE_STATUSET = ['i ri', 'u pergjigj', 'e lashe'];
-const ALERTE_KOLONAT = 'id, url, titulli, fragmenti, burimi, alerti, publikuar, gjetur_at, statusi';
-const alerteGjendja = { fundit: null, feedet: 0, te_reja: 0, gabime: [] };
+const ALERTE_KOLONAT = 'id, url, titulli, fragmenti, burimi, alerti, alertet, publikuar, gjetur_at, statusi';
+const alerteGjendja = { fundit: null, feedet: 0, te_reja: 0, gabime: [], detaje: [] };
 let alertePoll = false;
 
 function alerteFeedet() {
-  return String(process.env.GOOGLE_ALERTS_FEEDS || '').split(/[\n,]+/).map(s => s.trim()).filter(s => /^https:\/\//i.test(s));
+  return String(process.env.GOOGLE_ALERTS_FEEDS || '').split(/[\s,;]+/).map(s => s.trim()).filter(s => /^https:\/\//i.test(s));
 }
 
 function dekodoXml(s) {
@@ -781,10 +785,11 @@ function lexoAtom(xml) {
     try { burimi = new URL(url).hostname.replace(/^www\./, ''); } catch (e) { burimi = ''; }
     hyrjet.push({ url, titulli, fragmenti, burimi, publikuar: d && !isNaN(d) ? d.toISOString() : null });
   });
-  return { alerti, hyrjet };
+  return { alerti, hyrjet, gjithsej: (tekst.match(/<entry[\s>]/gi) || []).length };
 }
 
-// Ruan hyrjet e reja (dublikatet sipas URL-se anashkalohen nga baza). Kthen sa ishin vertet te reja.
+// Ruan hyrjet e reja (dublikatet sipas URL-se nuk shtohen dy here). Nese nje lidhje ekziston dhe e ka gjetur edhe nje alert tjeter,
+// emri i atij alerti shtohet te "alertet" te rreshti ekzistues. Kthen sa ishin vertet te reja.
 async function ruajHyrjetAlerte(hyrjet, alerti) {
   const pare = new Set(), urls = [], titujt = [], fragmentet = [], burimet = [], alertet = [], datat = [];
   for (const h of hyrjet) {
@@ -794,23 +799,43 @@ async function ruajHyrjetAlerte(hyrjet, alerti) {
   }
   if (!urls.length) return 0;
   const r = await pool.query(
-    'INSERT INTO alerte_rezultate (url, titulli, fragmenti, burimi, alerti, publikuar) SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::timestamptz[]) ON CONFLICT (url) DO NOTHING',
+    `WITH te_reja AS (
+       INSERT INTO alerte_rezultate (url, titulli, fragmenti, burimi, alerti, alertet, publikuar)
+       SELECT u, t, f, b, a, CASE WHEN a <> '' THEN ARRAY[a] ELSE '{}'::text[] END, p
+       FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::timestamptz[]) AS x(u, t, f, b, a, p)
+       ON CONFLICT (url) DO NOTHING
+       RETURNING url
+     ), shtuar AS (
+       UPDATE alerte_rezultate r SET alertet = COALESCE(r.alertet, '{}'::text[]) || x.a
+       FROM UNNEST($1::text[], $5::text[]) AS x(u, a)
+       WHERE r.url = x.u AND x.a <> '' AND NOT (x.a = ANY(COALESCE(r.alertet, '{}'::text[])))
+       RETURNING r.url
+     )
+     SELECT (SELECT COUNT(*) FROM te_reja)::int AS te_reja, (SELECT COUNT(*) FROM shtuar)::int AS shtuar`,
     [urls, titujt, fragmentet, burimet, alertet, datat]);
-  return r.rowCount || 0;
+  return r.rows[0].te_reja;
 }
 
 async function lexoFeedetAlerte() {
   const feedet = alerteFeedet();
-  const gjendje = { fundit: new Date().toISOString(), feedet: feedet.length, te_reja: 0, gabime: [] };
+  const gjendje = { fundit: new Date().toISOString(), feedet: feedet.length, te_reja: 0, gabime: [], detaje: [] };
   for (let i = 0; i < feedet.length; i++) {
     try {
       const r = await fetchMeKohe(feedet[i], { headers: { 'user-agent': 'Mozilla/5.0 (compatible; emailet)' } }, 20000);
-      if (!r.ok) { gjendje.gabime.push('Feed ' + (i + 1) + ': HTTP ' + r.status); continue; }
-      const { alerti, hyrjet } = lexoAtom(await r.text());
-      gjendje.te_reja += await ruajHyrjetAlerte(hyrjet, alerti);
+      if (!r.ok) {
+        gjendje.gabime.push('Feed ' + (i + 1) + ': HTTP ' + r.status);
+        gjendje.detaje.push({ nr: i + 1, alerti: null, gabim: 'HTTP ' + r.status });
+        continue;
+      }
+      const { alerti, hyrjet, gjithsej } = lexoAtom(await r.text());
+      const te_reja = await ruajHyrjetAlerte(hyrjet, alerti);
+      gjendje.te_reja += te_reja;
+      gjendje.detaje.push({ nr: i + 1, alerti, hyrje: hyrjet.length, gjithsej, te_reja });
     } catch (e) {
       // adresat e feed-eve jane sekrete: hiqen nga cdo mesazh gabimi
-      gjendje.gabime.push('Feed ' + (i + 1) + ': ' + String(e.message).replace(/https?:\/\/\S+/g, '[adrese]'));
+      const mesazhi = String(e.message).replace(/https?:\/\/\S+/g, '[adrese]');
+      gjendje.gabime.push('Feed ' + (i + 1) + ': ' + mesazhi);
+      gjendje.detaje.push({ nr: i + 1, alerti: null, gabim: mesazhi });
     }
   }
   Object.assign(alerteGjendja, gjendje);
@@ -999,8 +1024,12 @@ app.get('/', (req, res) => {
         <option value="e lashe">E lashe</option>
         <option value="">Te gjitha</option>
       </select>
+      <select id="alerteAlerti" onchange="alerteNgarko()" style="max-width:100%;">
+        <option value="">Te gjitha alertet</option>
+      </select>
     </div>
     <div id="alerteInfo" style="font-size:13px; color:#8b949e; margin-bottom:8px;"></div>
+    <div id="alerteDetaje" style="font-size:12px; color:#8b949e; margin-bottom:8px; word-break:break-word;"></div>
     <div id="alerteStat" style="font-size:13px; color:#8b949e; margin-bottom:12px;"></div>
     <div id="alerteRez"></div>
   </div>
@@ -1350,9 +1379,10 @@ function kompShfaq(d){
 async function alerteNgarko(){
   var stat = document.getElementById('alerteStat');
   var filtri = document.getElementById('alerteFiltri').value;
+  var alertiZgj = document.getElementById('alerteAlerti').value;
   stat.textContent = 'Po ngarkoj...';
   try{
-    var r = await fetch('/api/alerte?statusi=' + encodeURIComponent(filtri) + '&limit=200');
+    var r = await fetch('/api/alerte?statusi=' + encodeURIComponent(filtri) + '&alerti=' + encodeURIComponent(alertiZgj) + '&limit=200');
     var d = await r.json();
     if(d.error){ stat.textContent = 'Gabim: ' + d.error; return; }
     stat.textContent = '';
@@ -1387,6 +1417,27 @@ function alerteShfaq(d){
   var g = d.gjendja || {};
   document.getElementById('alerteInfo').textContent = d.feedet + ' feed te konfiguruar | te reja: ' + d.numrat['i ri'] + ' | u pergjigj: ' + d.numrat['u pergjigj'] +
     ' | e lashe: ' + d.numrat['e lashe'] + ' | leximi i fundit: ' + (g.fundit ? g.fundit.slice(0, 16).replace('T', ' ') : 'ende jo');
+  // Zgjedhesi i alertit: cdo alert me numrin e njoftimeve (sipas statusit te zgjedhur). Alerti i zgjedhur mbetet i zgjedhur.
+  var sa = document.getElementById('alerteAlerti'), zgj = sa.value, lista = d.alertet_lista || [], gjetur = !zgj;
+  sa.innerHTML = '';
+  var o0 = document.createElement('option'); o0.value = ''; o0.textContent = 'Te gjitha alertet (' + lista.length + ')'; sa.appendChild(o0);
+  lista.forEach(function(x){
+    var op = document.createElement('option'); op.value = x.alerti; op.textContent = x.alerti + ' (' + x.n + ')'; sa.appendChild(op);
+    if(x.alerti === zgj){ gjetur = true; }
+  });
+  if(!gjetur){ var oz = document.createElement('option'); oz.value = zgj; oz.textContent = zgj + ' (0)'; sa.appendChild(oz); }
+  sa.value = zgj;
+  // Leximi i fundit, feed pas feed-i: cili alert, sa hyrje kishte, sa ishin te reja ose gabimi.
+  var det = document.getElementById('alerteDetaje'); det.innerHTML = '';
+  if(g.detaje && g.detaje.length){
+    var dt = document.createElement('div'); dt.textContent = 'Leximi i fundit, feed pas feed-i:'; det.appendChild(dt);
+    g.detaje.forEach(function(x){
+      var dv = document.createElement('div'); dv.style.cssText = 'margin-left:10px;';
+      if(x.gabim){ dv.textContent = 'Feed ' + x.nr + ': nuk u lexua - ' + x.gabim; dv.style.color = '#f85149'; }
+      else { dv.textContent = 'Feed ' + x.nr + ': ' + (x.alerti || '(pa emer)') + ' | ' + x.hyrje + ' hyrje' + (x.gjithsej > x.hyrje ? (' (' + (x.gjithsej - x.hyrje) + ' pa lidhje te vlefshme)') : '') + ' | ' + x.te_reja + ' te reja'; }
+      det.appendChild(dv);
+    });
+  }
   if(!d.feedet){
     var pa = document.createElement('div'); pa.style.cssText = 'font-size:13px; color:#d29922;';
     pa.textContent = 'Asnje feed i konfiguruar. Vendos GOOGLE_ALERTS_FEEDS te Railway, Variables (adresa RSS e alertit).';
@@ -1415,8 +1466,11 @@ function alerteShfaq(d){
     } else { tdT.textContent = k.titulli || ''; }
     tr.appendChild(tdT);
     var tdB = document.createElement('td'); tdB.textContent = k.burimi || ''; tr.appendChild(tdB);
-    var tdA = document.createElement('td'), alerti = k.alerti || '';
-    tdA.textContent = alerti.length > 38 ? (alerti.slice(0, 38) + '...') : alerti; tdA.title = alerti; tdA.style.cssText = 'font-size:12px; color:#8b949e;';
+    // Alerti shfaqet i plote (pa prerje); nese postimin e gjeten disa alerte, secili del ne rresht te vet.
+    var tdA = document.createElement('td');
+    var alertetRreshtit = (k.alertet && k.alertet.length) ? k.alertet : (k.alerti ? [k.alerti] : []);
+    alertetRreshtit.forEach(function(a){ var dv = document.createElement('div'); dv.textContent = a; dv.style.cssText = 'margin-bottom:4px;'; tdA.appendChild(dv); });
+    tdA.style.cssText = 'font-size:12px; color:#8b949e; word-break:break-word; min-width:170px;';
     tr.appendChild(tdA);
     [(k.fragmenti || '').slice(0, 220), String(k.publikuar || k.gjetur_at || '').slice(0, 10)].forEach(function(t){
       var td = document.createElement('td'); td.textContent = t; tr.appendChild(td);
@@ -2021,13 +2075,21 @@ app.get('/api/alerte', async (req, res) => {
     const q = req.query || {};
     const statusi = ALERTE_STATUSET.includes(q.statusi) ? q.statusi : null;
     const limit = Math.min(500, Math.max(1, parseInt(q.limit, 10) || 100));
-    const rows = statusi
-      ? (await pool.query('SELECT ' + ALERTE_KOLONAT + ' FROM alerte_rezultate WHERE statusi = $1 ORDER BY COALESCE(publikuar, gjetur_at) DESC, id DESC LIMIT $2', [statusi, limit])).rows
-      : (await pool.query('SELECT ' + ALERTE_KOLONAT + ' FROM alerte_rezultate ORDER BY COALESCE(publikuar, gjetur_at) DESC, id DESC LIMIT $1', [limit])).rows;
+    const alertiFiltri = String(q.alerti || '').slice(0, 1000);
+    const kushte = [], par = [];
+    if (statusi) { par.push(statusi); kushte.push('statusi = $' + par.length); }
+    if (alertiFiltri) { par.push(alertiFiltri); kushte.push('$' + par.length + '::text = ANY(alertet)'); }
+    par.push(limit);
+    const rows = (await pool.query('SELECT ' + ALERTE_KOLONAT + ' FROM alerte_rezultate' + (kushte.length ? ' WHERE ' + kushte.join(' AND ') : '') +
+      ' ORDER BY COALESCE(publikuar, gjetur_at) DESC, id DESC LIMIT $' + par.length, par)).rows;
     const numrimi = (await pool.query('SELECT statusi, COUNT(*)::int AS n FROM alerte_rezultate GROUP BY statusi')).rows;
     const numrat = { 'i ri': 0, 'u pergjigj': 0, 'e lashe': 0 };
     numrimi.forEach(r => { if (r.statusi in numrat) numrat[r.statusi] = r.n; });
-    res.json({ ok: true, rows, numrat, feedet: alerteFeedet().length, gjendja: alerteGjendja });
+    // Cilat alerte ekzistojne dhe sa njoftime ka secili (sipas statusit te zgjedhur), qe te zgjidhet nje per nje.
+    const alertetLista = (await pool.query(
+      'SELECT a AS alerti, COUNT(*)::int AS n FROM alerte_rezultate r, UNNEST(r.alertet) AS a' + (statusi ? ' WHERE r.statusi = $1' : '') + ' GROUP BY a ORDER BY n DESC, a ASC',
+      statusi ? [statusi] : [])).rows;
+    res.json({ ok: true, rows, numrat, alertet_lista: alertetLista, feedet: alerteFeedet().length, gjendja: alerteGjendja });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -2035,7 +2097,7 @@ app.post('/api/alerte/rifresko', async (req, res) => {
   if (!alerteFeedet().length) return res.status(400).json({ error: 'GOOGLE_ALERTS_FEEDS mungon te Railway → Variables.' });
   try {
     const g = await lexoFeedetAlerte();
-    res.json({ ok: true, feedet: g.feedet, te_reja: g.te_reja, gabime: g.gabime, fundit: g.fundit });
+    res.json({ ok: true, feedet: g.feedet, te_reja: g.te_reja, gabime: g.gabime, detaje: g.detaje, fundit: g.fundit });
   } catch (e) { res.status(500).json({ error: String(e.message).replace(/https?:\/\/\S+/g, '[adrese]') }); }
 });
 
