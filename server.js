@@ -33,8 +33,23 @@ pool.query(`CREATE TABLE IF NOT EXISTS kompani_pare (
   ADD COLUMN IF NOT EXISTS shteti TEXT, ADD COLUMN IF NOT EXISTS qyteti TEXT, ADD COLUMN IF NOT EXISTS linkedin TEXT, ADD COLUMN IF NOT EXISTS twitter TEXT,
   ADD COLUMN IF NOT EXISTS fshih BOOLEAN DEFAULT true, ADD COLUMN IF NOT EXISTS email TEXT, ADD COLUMN IF NOT EXISTS email_lloji TEXT,
   ADD COLUMN IF NOT EXISTS email_mx BOOLEAN, ADD COLUMN IF NOT EXISTS email_burimi TEXT,
-  ADD COLUMN IF NOT EXISTS email_gjendja TEXT DEFAULT 'pa-kerkuar', ADD COLUMN IF NOT EXISTS email_at TIMESTAMPTZ, ADD COLUMN IF NOT EXISTS kategoria TEXT`))
+  ADD COLUMN IF NOT EXISTS email_gjendja TEXT DEFAULT 'pa-kerkuar', ADD COLUMN IF NOT EXISTS email_at TIMESTAMPTZ, ADD COLUMN IF NOT EXISTS kategoria TEXT,
+  ADD COLUMN IF NOT EXISTS statusi TEXT DEFAULT 'pa-perfunduar', ADD COLUMN IF NOT EXISTS statusi_at TIMESTAMPTZ`))
   .catch(e => console.error('migrim kompani_pare:', e.message));
+// Kompanite qe Crustdata i ktheu PA domain (vetem me LinkedIn): ruhen ketu sipas ID-se se Crustdata, qe te kontaktohen manualisht.
+// statusi: 'pa-perfunduar' (paracaktuar) ose 'perfunduar' (e shenuar nga perdoruesi pasi i ka dergar mesazhin). Te njejtin status e kane
+// edhe kompanite me domain por pa email te gjetur (kolona statusi te kompani_pare).
+pool.query(`CREATE TABLE IF NOT EXISTS kompani_pa_domain (
+  crustdata_id BIGINT PRIMARY KEY,
+  emri TEXT,
+  gjetur_at TIMESTAMPTZ DEFAULT now()
+)`).then(() => pool.query(`ALTER TABLE kompani_pa_domain
+  ADD COLUMN IF NOT EXISTS website TEXT, ADD COLUMN IF NOT EXISTS viti INTEGER, ADD COLUMN IF NOT EXISTS punonjes TEXT,
+  ADD COLUMN IF NOT EXISTS shteti TEXT, ADD COLUMN IF NOT EXISTS qyteti TEXT, ADD COLUMN IF NOT EXISTS linkedin TEXT, ADD COLUMN IF NOT EXISTS twitter TEXT,
+  ADD COLUMN IF NOT EXISTS kategoria TEXT, ADD COLUMN IF NOT EXISTS fshih BOOLEAN DEFAULT true,
+  ADD COLUMN IF NOT EXISTS statusi TEXT DEFAULT 'pa-perfunduar', ADD COLUMN IF NOT EXISTS statusi_at TIMESTAMPTZ`))
+  .catch(e => console.error('migrim kompani_pa_domain:', e.message));
+const KOMPANI_STATUSET = ['pa-perfunduar', 'perfunduar'];
 // Njoftimet e Google Alerts (nga feed-et RSS), per tab-in "Alerte".
 pool.query(`CREATE TABLE IF NOT EXISTS alerte_rezultate (
   id SERIAL PRIMARY KEY,
@@ -348,13 +363,16 @@ function mesazhGabimiCrustdata(r) {
 // Operatoret sipas dokumentimit: "=>" eshte >= (jo ">="), "=<" eshte <=, "(.)" eshte perputhje e perafert e fjaleve.
 function ndertoFiltratKompani(p) {
   // Kufi i siperm per vitin: pa te, vlera te pavlefshme ne bazen e Crustdata (p.sh. 3027, 4202) dalin te para ne renditjen
-  // sipas vitit. Kerkohet edhe nje faqe interneti, sepse pa te s'ka si te kontaktohet kompania.
+  // sipas vitit. Kerkimi kryesor kerkon nje domain (qe te gjendet email nga faqja); p.paDomain = true eshte kerkesa e dyte, e vecante,
+  // qe kerkon pikerisht kompanite PA domain (is_null). Ato te pa-ruajtura perjashtohen sipas ID-se se Crustdata (fusha crustdata_company_id
+  // eshte filtrueshme dhe kurre bosh), jo sipas domain-it: dokumentimi nuk thote si sillet "not_in" per fusha boshe.
   const kushte = [
     { field: 'basic_info.year_founded', type: '=>', value: p.viti },
     { field: 'basic_info.year_founded', type: '=<', value: p.vitiMax },
-    { field: 'basic_info.primary_domain', type: 'is_not_null', value: null }
+    { field: 'basic_info.primary_domain', type: p.paDomain ? 'is_null' : 'is_not_null', value: null }
   ];
-  if (p.perjashto && p.perjashto.length) kushte.push({ field: 'basic_info.primary_domain', type: 'not_in', value: p.perjashto });
+  if (!p.paDomain && p.perjashto && p.perjashto.length) kushte.push({ field: 'basic_info.primary_domain', type: 'not_in', value: p.perjashto });
+  if (p.perjashtoId && p.perjashtoId.length) kushte.push({ field: 'crustdata_company_id', type: 'not_in', value: p.perjashtoId });
   if (p.industria) kushte.push({ field: 'taxonomy.professional_network_industry', type: '(.)', value: p.industria });
   if (p.shteti) kushte.push({ field: 'locations.country', type: '=', value: p.shteti });
   if (p.maksPunonjes) kushte.push({ field: 'headcount.total', type: '=<', value: p.maksPunonjes });
@@ -369,16 +387,23 @@ function normalizoDomain(d) { return String(d || '').trim().toLowerCase().replac
 async function merrDomainetePara() {
   const kufi = 5000;
   const teGjitha = new Set();
-  const pare = await pool.query('SELECT domain FROM kompani_pare WHERE fshih = true ORDER BY gjetur_at DESC LIMIT ' + kufi);
+  // Ato te shenuara "perfunduar" perjashtohen gjithmone, edhe pas "Lejo rishfaqjen".
+  const pare = await pool.query("SELECT domain FROM kompani_pare WHERE fshih = true OR statusi = 'perfunduar' ORDER BY gjetur_at DESC LIMIT " + kufi);
   pare.rows.forEach(r => { const d = normalizoDomain(r.domain); if (d) teGjitha.add(d); });
   const ruajtura = await pool.query('SELECT domain FROM bizneset_gjetur');
   ruajtura.rows.forEach(r => { const d = normalizoDomain(r.domain); if (d) teGjitha.add(d); });
   return Array.from(teGjitha).slice(0, kufi);
 }
 
+// ID-te e Crustdata te kompanive pa domain qe nuk duhet te dalin serish (te pare me pare, ose te shenuara "perfunduar").
+async function merrIdetePaDomain() {
+  const r = await pool.query("SELECT crustdata_id FROM kompani_pa_domain WHERE fshih = true OR statusi = 'perfunduar' ORDER BY gjetur_at DESC LIMIT 5000");
+  return r.rows.map(x => Number(x.crustdata_id)).filter(n => Number.isSafeInteger(n) && n > 0);
+}
+
 // Ruan kompanite me te dhenat e plota. Nese ekzistojne (p.sh. ruajtur me pare me email), te dhenat e vjetra MBETEN dhe
 // plotesohen vetem fushat bosh; "fshih" behet perseri true. Kthen gjendjen e email-it per secilen dhe e shton te objekti.
-async function ruajKompanite(kompanite, kategoria) {
+async function ruajKompaniteMeDomain(kompanite, kategoria) {
   const A = { d: [], emri: [], web: [], viti: [], pun: [], shteti: [], qyteti: [], li: [], tw: [] }, pare = new Set(), objekte = {};
   for (const k of kompanite) {
     const d = normalizoDomain(k.domain);
@@ -394,16 +419,48 @@ async function ruajKompanite(kompanite, kategoria) {
     'ON CONFLICT (domain) DO UPDATE SET emri = COALESCE(NULLIF(kompani_pare.emri, \'\'), EXCLUDED.emri), website = COALESCE(kompani_pare.website, EXCLUDED.website), ' +
     'viti = COALESCE(kompani_pare.viti, EXCLUDED.viti), punonjes = COALESCE(kompani_pare.punonjes, EXCLUDED.punonjes), shteti = COALESCE(kompani_pare.shteti, EXCLUDED.shteti), ' +
     'qyteti = COALESCE(kompani_pare.qyteti, EXCLUDED.qyteti), linkedin = COALESCE(kompani_pare.linkedin, EXCLUDED.linkedin), twitter = COALESCE(kompani_pare.twitter, EXCLUDED.twitter), kategoria = COALESCE(kompani_pare.kategoria, EXCLUDED.kategoria), fshih = true ' +
-    'RETURNING domain, email, email_lloji, email_mx, email_burimi, email_gjendja, kategoria',
+    'RETURNING domain, email, email_lloji, email_mx, email_burimi, email_gjendja, kategoria, statusi',
     [A.d, A.emri, A.web, A.viti, A.pun, A.shteti, A.qyteti, A.li, A.tw, kategoria || null]);
-  (r.rows || []).forEach(x => { const k = objekte[normalizoDomain(x.domain)]; if (k) Object.assign(k, { email: x.email || null, email_lloji: x.email_lloji || null, email_mx: x.email_mx == null ? null : x.email_mx, email_burimi: x.email_burimi || null, email_gjendja: x.email_gjendja || null, kategoria: x.kategoria || null }); });
+  (r.rows || []).forEach(x => { const k = objekte[normalizoDomain(x.domain)]; if (k) Object.assign(k, { email: x.email || null, email_lloji: x.email_lloji || null, email_mx: x.email_mx == null ? null : x.email_mx, email_burimi: x.email_burimi || null, email_gjendja: x.email_gjendja || null, kategoria: x.kategoria || null, statusi: x.statusi || 'pa-perfunduar' }); });
   return A.d.length;
+}
+
+// Kompanite PA domain (vetem me LinkedIn): ruhen sipas ID-se se Crustdata (fusha qe kthehet gjithmone). Te dhenat e vjetra MBETEN (dhe statusi),
+// plotesohen vetem fushat bosh; "fshih" behet perseri true. Pa ID nuk ka si identifikohet kompania, prandaj anashkalohet.
+async function ruajKompanitePaDomain(kompanite, kategoria) {
+  const A = { id: [], emri: [], web: [], viti: [], pun: [], shteti: [], qyteti: [], li: [], tw: [] }, pare = new Set(), objekte = {};
+  for (const k of kompanite) {
+    const id = Number(k.id);
+    if (!Number.isSafeInteger(id) || id <= 0 || pare.has(id)) continue;
+    pare.add(id); objekte[id] = k;
+    A.id.push(id); A.emri.push(k.emri || ''); A.web.push(k.website || null); A.viti.push(Number.isInteger(k.viti) ? k.viti : null);
+    A.pun.push(k.punonjes || null); A.shteti.push(k.shteti || null); A.qyteti.push(k.qyteti || null); A.li.push(k.linkedin || null); A.tw.push(k.twitter || null);
+  }
+  if (!A.id.length) return 0;
+  const r = await pool.query(
+    'INSERT INTO kompani_pa_domain (crustdata_id, emri, website, viti, punonjes, shteti, qyteti, linkedin, twitter, kategoria) ' +
+    'SELECT u.i, u.e, u.w, u.v, u.p, u.s, u.q, u.l, u.t, $10::text FROM UNNEST($1::bigint[], $2::text[], $3::text[], $4::int[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[]) AS u(i, e, w, v, p, s, q, l, t) ' +
+    'ON CONFLICT (crustdata_id) DO UPDATE SET emri = COALESCE(NULLIF(kompani_pa_domain.emri, \'\'), EXCLUDED.emri), website = COALESCE(kompani_pa_domain.website, EXCLUDED.website), ' +
+    'viti = COALESCE(kompani_pa_domain.viti, EXCLUDED.viti), punonjes = COALESCE(kompani_pa_domain.punonjes, EXCLUDED.punonjes), shteti = COALESCE(kompani_pa_domain.shteti, EXCLUDED.shteti), ' +
+    'qyteti = COALESCE(kompani_pa_domain.qyteti, EXCLUDED.qyteti), linkedin = COALESCE(kompani_pa_domain.linkedin, EXCLUDED.linkedin), twitter = COALESCE(kompani_pa_domain.twitter, EXCLUDED.twitter), kategoria = COALESCE(kompani_pa_domain.kategoria, EXCLUDED.kategoria), fshih = true ' +
+    'RETURNING crustdata_id, kategoria, statusi',
+    [A.id, A.emri, A.web, A.viti, A.pun, A.shteti, A.qyteti, A.li, A.tw, kategoria || null]);
+  (r.rows || []).forEach(x => { const k = objekte[Number(x.crustdata_id)]; if (k) Object.assign(k, { pa_domain: true, kategoria: x.kategoria || null, statusi: x.statusi || 'pa-perfunduar' }); });
+  return A.id.length;
+}
+
+// Ruan te gjitha kompanite e nje kerkimi: ato me domain te kompani_pare, ato pa domain te kompani_pa_domain.
+async function ruajKompanite(kompanite, kategoria) {
+  const paDomain = kompanite.filter(k => !normalizoDomain(k.domain));
+  const meDomain = kompanite.filter(k => normalizoDomain(k.domain));
+  const n = await ruajKompaniteMeDomain(meDomain, kategoria);
+  return n + await ruajKompanitePaDomain(paDomain, kategoria);
 }
 
 // Kerkesa qe i kthehet faqes per shfaqje: lista e gjate e domain-eve te perjashtuara zevendesohet me nje permbledhje.
 function kerkesePerShfaqje(trupi) {
   const kopje = JSON.parse(JSON.stringify(trupi));
-  const trego = k => { if (k && k.type === 'not_in' && Array.isArray(k.value)) k.value = '[' + k.value.length + ' domain-e te perjashtuara]'; };
+  const trego = k => { if (k && k.type === 'not_in' && Array.isArray(k.value)) k.value = '[' + k.value.length + (k.field === 'crustdata_company_id' ? ' ID te perjashtuara]' : ' domain-e te perjashtuara]'); };
   if (kopje.filters) { trego(kopje.filters); (kopje.filters.conditions || []).forEach(trego); }
   return kopje;
 }
@@ -900,7 +957,7 @@ app.get('/', (req, res) => {
   </div>
 
   <div class="sec-panel" id="panelKompani">
-    <p class="mut">Gjen kompani te themeluara rishtas permes Crustdata dhe i ruan te databaza (emri, faqja, viti, punonjes, shteti, LinkedIn). Sipas dokumentimit, kerkimi kushton 0.03 kredite per rezultat, plus rreth 0.1 per filtrin e industrise dhe 0.2 per filtrin e punonjesve; kostoja e sakte shfaqet pas cdo kerkese. Fusha Fjale kyce kerkon sipas kuptimit (jo vetem sipas etiketes se industrise) dhe, kur eshte e mbushur, i rendit rezultatet sipas perputhjes, jo sipas vitit; filtrat e tjere mbeten kushte te forta. Butoni Gjej email lexon faqen e kompanise (kryesore, kontakt, rreth nesh) dhe merr email-in qe eshte SHKRUAR atje; kur ka disa, AI zgjedh me te mirin. Asnje adrese nuk hamendesohet, dhe kjo nuk shpenzon kredite Crustdata. Te gjitha te ruajturat shfaq edhe ato te gjeneruara me pare.</p>
+    <p class="mut">Gjen kompani te themeluara rishtas permes Crustdata dhe i ruan te databaza (emri, faqja, viti, punonjes, shteti, LinkedIn). Sipas dokumentimit, kerkimi kushton 0.03 kredite per rezultat, plus rreth 0.1 per filtrin e industrise dhe 0.2 per filtrin e punonjesve; kostoja e sakte shfaqet pas cdo kerkese. Fusha Fjale kyce kerkon sipas kuptimit (jo vetem sipas etiketes se industrise) dhe, kur eshte e mbushur, i rendit rezultatet sipas perputhjes, jo sipas vitit; filtrat e tjere mbeten kushte te forta. Butoni Gjej email lexon faqen e kompanise (kryesore, kontakt, rreth nesh) dhe merr email-in qe eshte SHKRUAR atje; kur ka disa, AI zgjedh me te mirin. Asnje adrese nuk hamendesohet, dhe kjo nuk shpenzon kredite Crustdata. Te gjitha te ruajturat shfaq edhe ato te gjeneruara me pare. Kompanite qe Crustdata i kthen pa domain (vetem me LinkedIn) ruhen gjithashtu dhe dalin vetem te filtri Pa domain. Per kompanite pa domain, dhe per ato me domain ku nuk u gjet email, ka nje zgjedhes statusi ne te djathte (E paperfunduar / E perfunduar): shenoje E perfunduar pasi t'i kontaktosh vete, dhe ato nuk dalin me te kerkimet.</p>
     <div class="row">
       <div class="fusha"><span>Themeluar nga viti (perfshire)</span><input type="number" id="kompViti" value="2025" min="1990" max="2030" style="width:150px;" oninput="kompVleresim()" /></div>
       <div class="fusha"><span>Industria (opsionale)</span><input type="text" id="kompIndustria" value="Software Development" style="width:230px; flex:none; min-width:0;" oninput="kompVleresim()" /></div>
@@ -918,11 +975,13 @@ app.get('/', (req, res) => {
     </div>
     <div class="row">
       <label class="bisChk"><input type="checkbox" id="kompFshih" checked /> Fshih kompanite qe te jane dhene me pare</label>
+      <label class="bisChk"><input type="checkbox" id="kompPaDomain" checked onchange="kompVleresim()" /> Perfshi edhe pa domain (kerkese e dyte, kosto shtese)</label>
       <button onclick="kompPastro(this)" style="background:#2a313c;">Lejo rishfaqjen (te dhenat mbeten)</button>
     </div>
     <div class="row">
       <button onclick="kompRuajtura(this)" style="background:#2a313c;">Te gjitha te ruajturat</button>
-      <select id="kompFiltri" onchange="kompRuajtura()"><option value="te-gjitha">Te gjitha</option><option value="me-email">Vetem me email</option><option value="pa-email">Vetem pa email</option></select>
+      <select id="kompFiltri" onchange="kompRuajtura()"><option value="te-gjitha">Te gjitha</option><option value="me-email">Vetem me email</option><option value="pa-email">Vetem pa email</option><option value="pa-domain">Pa domain</option></select>
+      <select id="kompStatFiltri" onchange="kompRuajtura()"><option value="">Te gjitha statuset</option><option value="pa-perfunduar">E paperfunduar</option><option value="perfunduar">E perfunduar</option></select>
       <button onclick="kompGjejTeGjitha(this)" style="background:#2a313c;">Gjej email-et per ato qe s'i kam kerkuar (maks. 20)</button>
     </div>
     <div id="kompSugj" style="margin-bottom:8px;"></div>
@@ -1037,7 +1096,8 @@ function kompVleresim(){
   var cmim = 0.03;
   if(document.getElementById('kompIndustria').value.trim()){ cmim += 0.1; }
   if(parseInt(document.getElementById('kompMaks').value, 10) > 0){ cmim += 0.2; }
-  document.getElementById('kompKoste').textContent = 'Kosto maksimale e vleresuar: rreth ' + (lim * cmim).toFixed(2) + ' kredite (cmimet e listes ne dokumentim)';
+  var dyfishi = !!(document.getElementById('kompPaDomain') && document.getElementById('kompPaDomain').checked);
+  document.getElementById('kompKoste').textContent = 'Kosto maksimale e vleresuar: rreth ' + (lim * cmim * (dyfishi ? 2 : 1)).toFixed(2) + ' kredite' + (dyfishi ? ' (me kerkesen e dyte per pa domain)' : '') + ' (cmimet e listes ne dokumentim)';
 }
 async function kompKredite(btn){
   var stat = document.getElementById('kompStat');
@@ -1078,7 +1138,8 @@ async function kompKerko(btn){
     shteti: document.getElementById('kompShteti').value.trim(),
     maksPunonjes: document.getElementById('kompMaks').value,
     limit: document.getElementById('kompLimit').value,
-    fshihTePara: document.getElementById('kompFshih').checked
+    fshihTePara: document.getElementById('kompFshih').checked,
+    perfshiPaDomain: document.getElementById('kompPaDomain').checked
   };
   btn.disabled = true; stat.textContent = 'Po kerkoj te Crustdata...'; rez.innerHTML = '';
   try{
@@ -1091,7 +1152,7 @@ async function kompKerko(btn){
 }
 async function kompPastro(btn){
   var stat = document.getElementById('kompStat');
-  if(!confirm('Kompanite e ruajtura dhe email-et e tyre MBETEN. Vetem do te lejohet qe te shfaqen serish te kerkimet. Vazhdo?')){ return; }
+  if(!confirm('Kompanite e ruajtura dhe email-et e tyre MBETEN. Vetem do te lejohet qe te shfaqen serish te kerkimet (edhe ato pa domain). Ato te shenuara E perfunduar nuk rishfaqen. Vazhdo?')){ return; }
   btn.disabled = true; stat.textContent = 'Po e lejoj...';
   try{
     var r = await fetch('/api/kompani-reja/pastro', { method:'POST' });
@@ -1135,6 +1196,8 @@ async function kompGjejEmail(domain, td, rigjej){
     kompEmailCel(td, { domain: domain, email: d.email, email_lloji: d.email_lloji, email_mx: d.email_mx, email_burimi: d.email_burimi, email_gjendja: d.email_gjendja });
     var tr = td.parentNode;
     if(tr && tr.setAttribute){ tr.setAttribute('data-gjendja', d.email_gjendja || ''); }
+    // Pasi u provua gjetja dhe nuk u gjet email, del zgjedhesi i statusit ne te djathte te rreshtit.
+    if(tr && tr.kompRifreskoStatusin){ tr.kompRifreskoStatusin({ email: d.email || null, email_gjendja: d.email_gjendja || null }); }
     return d;
   }catch(e){ td.textContent = 'Gabim rrjeti: ' + e.message; return null; }
 }
@@ -1155,29 +1218,69 @@ async function kompGjejTeGjitha(btn){
   stat.textContent = 'U gjeten ' + gjetur + ' email nga ' + rreshta.length + ' faqe te lexuara.';
   btn.disabled = false;
 }
+var kompNeShfaqje = 'kerkim'; // 'kerkim' = rezultatet e nje kerkimi te ri; 'ruajtura' = lista e ruajtur (e filtruar)
+// Zgjedhesi i statusit del per kompanite qe kontaktohen jashte email-it: ato pa domain, ato me domain por pa email pasi u provua gjetja
+// (pa email ne faqe / faqja nuk u hap), dhe cdo e perfunduar (qe te mund te rikthehet).
+function kompStatusiNevojitet(k){
+  if(!k.domain){ return true; }
+  if(k.statusi === 'perfunduar'){ return true; }
+  return !k.email && (k.email_gjendja === 'pa-email' || k.email_gjendja === 'gabim');
+}
+function kompStatusiCel(td, tr, k){
+  td.innerHTML = '';
+  tr.style.opacity = k.statusi === 'perfunduar' ? '0.55' : '';
+  if(!kompStatusiNevojitet(k)){ return; }
+  var sel = document.createElement('select');
+  [['pa-perfunduar', 'E paperfunduar'], ['perfunduar', 'E perfunduar']].forEach(function(o){
+    var op = document.createElement('option'); op.value = o[0]; op.textContent = o[1]; if(o[0] === (k.statusi || 'pa-perfunduar')){ op.selected = true; } sel.appendChild(op);
+  });
+  sel.onchange = function(){ kompStatusi(k, sel, tr); };
+  td.appendChild(sel);
+}
+async function kompStatusi(k, sel, tr){
+  var stat = document.getElementById('kompStat'), vjeter = k.statusi || 'pa-perfunduar', vlera = sel.value;
+  sel.disabled = true;
+  try{
+    var r = await fetch('/api/kompani-reja/statusi', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(k.domain ? { domain: k.domain, statusi: vlera } : { id: k.id, statusi: vlera }) });
+    var d = await r.json();
+    if(d.error){ sel.value = vjeter; stat.textContent = 'Gabim: ' + d.error; sel.disabled = false; return; }
+    k.statusi = vlera; stat.textContent = '';
+    tr.style.opacity = vlera === 'perfunduar' ? '0.55' : '';
+  }catch(e){ sel.value = vjeter; stat.textContent = 'Gabim rrjeti: ' + e.message; sel.disabled = false; return; }
+  sel.disabled = false;
+  // Nese lista e ruajtur eshte e filtruar sipas statusit, rreshti qe ndryshoi statusin duhet te largohet nga ajo liste.
+  if(kompNeShfaqje === 'ruajtura' && document.getElementById('kompStatFiltri').value){ kompRuajtura(); }
+}
 function kompTabela(rreshta){
   var tbl = document.createElement('table');
   var thead = document.createElement('thead'), hr = document.createElement('tr');
-  ['Emri', 'Domain', 'Viti', 'Punonjes', 'Shteti', 'Email', 'LinkedIn', 'X', 'Kategoria'].forEach(function(t){ var th = document.createElement('th'); th.textContent = t; hr.appendChild(th); });
+  ['Emri', 'Domain', 'Viti', 'Punonjes', 'Shteti', 'Email', 'LinkedIn', 'X', 'Kategoria', 'Statusi'].forEach(function(t){ var th = document.createElement('th'); th.textContent = t; hr.appendChild(th); });
   thead.appendChild(hr); tbl.appendChild(thead);
   var tbody = document.createElement('tbody');
   rreshta.forEach(function(k){
     var tr = document.createElement('tr');
-    tr.setAttribute('data-domain', k.domain || '');
-    tr.setAttribute('data-gjendja', k.email ? 'u-gjet' : (k.email_gjendja || 'pa-kerkuar'));
+    if(k.domain){ tr.setAttribute('data-domain', k.domain); }
+    tr.setAttribute('data-gjendja', !k.domain ? 'pa-domain' : (k.email ? 'u-gjet' : (k.email_gjendja || 'pa-kerkuar')));
     var sigurt = k.domain && /^[a-z0-9.-]+$/i.test(k.domain) ? ('https://' + k.domain) : null;
     kompCel(tr, k.emri || '(pa emer)', null);
     var webOk = k.website && (k.website.indexOf('http://') === 0 || k.website.indexOf('https://') === 0);
-    kompCel(tr, k.domain || k.website || '', webOk ? k.website : sigurt);
+    kompCel(tr, k.domain || k.website || 'pa domain', webOk ? k.website : sigurt);
     kompCel(tr, k.viti != null ? String(k.viti) : '', null);
     kompCel(tr, k.punonjes || '', null);
     kompCel(tr, k.shteti || '', null);
     var tdE = document.createElement('td'); tdE.className = 'kompEmail';
     if(k.domain){ kompEmailCel(tdE, k); }
+    else { tdE.textContent = 'pa domain'; tdE.style.cssText = 'font-size:12px; color:#8b949e;'; }
     tr.appendChild(tdE);
-    kompCel(tr, k.linkedin ? 'LinkedIn' : '', k.linkedin);
+    var li = k.linkedin;
+    if(li && li.indexOf('http://') !== 0 && li.indexOf('https://') !== 0 && li.indexOf('linkedin.com') !== -1){ li = 'https://' + li; }
+    kompCel(tr, k.linkedin ? 'LinkedIn' : '', li);
     kompCel(tr, k.twitter ? 'X' : '', k.twitter);
     kompCel(tr, k.kategoria || '', null);
+    var tdS = document.createElement('td'); tdS.className = 'kompStatusi';
+    tr.appendChild(tdS);
+    kompStatusiCel(tdS, tr, k);
+    tr.kompRifreskoStatusin = function(ndryshime){ Object.keys(ndryshime).forEach(function(n){ k[n] = ndryshime[n]; }); kompStatusiCel(tdS, tr, k); };
     tbody.appendChild(tr);
   });
   tbl.appendChild(tbody);
@@ -1185,14 +1288,14 @@ function kompTabela(rreshta){
 }
 async function kompRuajtura(btn){
   var stat = document.getElementById('kompStat'), rez = document.getElementById('kompRez');
-  var filtri = document.getElementById('kompFiltri').value;
+  var filtri = document.getElementById('kompFiltri').value, statusi = document.getElementById('kompStatFiltri').value;
   if(btn){ btn.disabled = true; }
   stat.textContent = 'Po ngarkoj te ruajturat...'; rez.innerHTML = '';
   try{
-    var r = await fetch('/api/kompani-reja/ruajtura?filtri=' + encodeURIComponent(filtri) + '&limit=200');
+    var r = await fetch('/api/kompani-reja/ruajtura?filtri=' + encodeURIComponent(filtri) + '&statusi=' + encodeURIComponent(statusi) + '&limit=200');
     var d = await r.json();
     if(d.error){ stat.textContent = 'Gabim: ' + d.error; }
-    else { stat.textContent = ''; kompShfaqRuajtura(d); }
+    else { stat.textContent = ''; kompNeShfaqje = 'ruajtura'; kompShfaqRuajtura(d); }
   }catch(e){ stat.textContent = 'Gabim rrjeti: ' + e.message; }
   if(btn){ btn.disabled = false; }
 }
@@ -1200,9 +1303,19 @@ function kompShfaqRuajtura(d){
   var rez = document.getElementById('kompRez'); rez.innerHTML = '';
   var p = document.createElement('div');
   p.style.cssText = 'font-size:13px; color:#3fb950; font-weight:600; margin-bottom:6px;';
-  var totali = d.filtri === 'me-email' ? d.me_email : (d.filtri === 'pa-email' ? d.pa_email : d.gjithsej);
-  p.textContent = d.gjithsej + ' kompani te ruajtura | me email: ' + d.me_email + ' | pa email: ' + d.pa_email + ' | shfaqen ' + d.rows.length + (totali > d.rows.length ? (' nga ' + totali) : '');
+  var totali = d.totali != null ? d.totali : (d.filtri === 'me-email' ? d.me_email : (d.filtri === 'pa-email' ? d.pa_email : d.gjithsej));
+  var shfaqen = ' | shfaqen ' + d.rows.length + (totali > d.rows.length ? (' nga ' + totali) : '');
+  if(d.filtri === 'pa-domain'){
+    p.textContent = d.gjithsej + ' kompani pa domain | te paperfunduara: ' + d.pa_perfunduar + ' | te perfunduara: ' + d.perfunduar + shfaqen;
+  } else {
+    p.textContent = d.gjithsej + ' kompani te ruajtura | me email: ' + d.me_email + ' | pa email: ' + d.pa_email + (d.pa_domain != null ? (' | pa domain: ' + d.pa_domain) : '') + shfaqen;
+  }
   rez.appendChild(p);
+  if(d.filtri === 'pa-domain'){
+    var udh = document.createElement('div'); udh.style.cssText = 'font-size:12px; color:#8b949e; margin-bottom:8px;';
+    udh.textContent = 'Keto kompani nuk kane faqe interneti te Crustdata, prandaj nuk kane email. Hape LinkedIn, dergo mesazhin vete, pastaj ndrysho statusin ne E perfunduar.';
+    rez.appendChild(udh);
+  }
   if(!d.rows.length){
     var bosh = document.createElement('div'); bosh.style.cssText = 'font-size:13px; color:#8b949e;';
     bosh.textContent = 'Asnje kompani ne kete filter.';
@@ -1212,9 +1325,11 @@ function kompShfaqRuajtura(d){
 }
 function kompShfaq(d){
   var rez = document.getElementById('kompRez'); rez.innerHTML = '';
+  kompNeShfaqje = 'kerkim';
   var permbledhje = document.createElement('div');
   permbledhje.style.cssText = 'font-size:13px; color:#3fb950; font-weight:600; margin-bottom:6px;';
   permbledhje.textContent = d.kompanite.length + ' rezultate' + (d.total_count != null ? (' nga ' + d.total_count + ' qe perputhen gjithsej') : '') +
+    (d.pa_domain_nr ? (' | pa domain: ' + d.pa_domain_nr + ' (ruhen te filtri Pa domain)') : '') +
     ' | kredite te shpenzuara: ' + (d.kredite_perdorur != null ? d.kredite_perdorur : 'e panjohur') + ' | renditja: ' + d.renditja + (d.te_pare ? ' | u perjashtuan ' + d.te_pare + ' te pare me pare' : '') + (d.kategoria ? ' | kategoria: ' + d.kategoria : '');
   rez.appendChild(permbledhje);
   if(!d.kompanite.length){
@@ -1223,7 +1338,8 @@ function kompShfaq(d){
     rez.appendChild(bosh);
   }
   else { rez.appendChild(kompTabela(d.kompanite)); }
-  [['Kerkesa e derguar te Crustdata', d.kerkesa], ['JSON i plote nga Crustdata', d.raw]].forEach(function(p){
+  [['Kerkesa e derguar te Crustdata', d.kerkesa], ['JSON i plote nga Crustdata', d.raw], ['Kerkesa e dyte (pa domain)', d.kerkesa_pa_domain], ['JSON i plote (pa domain)', d.raw_pa_domain]].forEach(function(p){
+    if(!p[1]){ return; }
     var det = document.createElement('details'); det.style.cssText = 'margin-top:14px;';
     var sum = document.createElement('summary'); sum.textContent = p[0]; sum.style.cssText = 'cursor:pointer; font-size:12px; color:#8b949e;';
     var pre = document.createElement('pre'); pre.style.cssText = 'max-height:320px; overflow:auto; font-size:11px; background:#0e1116; padding:10px; border-radius:6px; margin-top:8px;';
@@ -1719,23 +1835,65 @@ app.post('/api/kompani-reja/kerko', async (req, res) => {
   const maksPunonjes = Number.isInteger(maks) && maks > 0 && maks <= 1000000 ? maks : null;
   const limit = Math.min(50, Math.max(1, parseInt(b.limit, 10) || 10)); // kufi i fortë 50, per te mbrojtur kreditet
   const fshihTePara = b.fshihTePara !== false; // paracaktuar: po
-  let perjashto = [], paralajmerim = null;
+  const perfshiPaDomain = b.perfshiPaDomain !== false; // paracaktuar: po (kerkese e dyte, vetem per kompani pa domain)
+  let perjashto = [], perjashtoId = [], paralajmerim = null;
+  const shtoParalajmerim = t => { paralajmerim = (paralajmerim ? paralajmerim + ' ' : '') + t; };
   if (fshihTePara) {
     try { perjashto = await merrDomainetePara(); }
     catch (e) { paralajmerim = 'Historiku nuk u lexua (' + e.message + '); kerkimi u be pa perjashtim.'; }
+    try { perjashtoId = await merrIdetePaDomain(); }
+    catch (e) { shtoParalajmerim('Historiku i kompanive pa domain nuk u lexua (' + e.message + ').'); }
   }
-  const trupiBaze = { filters: ndertoFiltratKompani({ viti, vitiMax: vitiAkt, industria, shteti, maksPunonjes, perjashto }), fields: FUSHAT_KOMPANI, limit };
-  if (pershkrim) trupiBaze.search = { query: pershkrim, mode: 'hybrid' }; // sipas dokumentimit: filtrat mbeten kushte te forta, renditja eshte sipas perputhjes
+  const fushatKerkimit = { viti, vitiMax: vitiAkt, industria, shteti, maksPunonjes };
+  // Trupi i kerkeses: paDomain = kerkesa e dyte (vetem kompani pa domain); ids = ID-te e perjashtuara (kompani pa domain te ruajtura).
+  const ndertoTrupin = (paDomain, ids) => {
+    const t = { filters: ndertoFiltratKompani(Object.assign({ perjashto, perjashtoId: ids, paDomain }, fushatKerkimit)), fields: FUSHAT_KOMPANI, limit };
+    if (pershkrim) t.search = { query: pershkrim, mode: 'hybrid' }; // sipas dokumentimit: filtrat mbeten kushte te forta, renditja eshte sipas perputhjes
+    return t;
+  };
+  // Perjashtimi sipas ID-se (not_in te crustdata_company_id) nuk ka shembull ne dokumentim. Nese Crustdata e refuzon (400, qe nuk kushton kredite),
+  // kerkimi perseritet pa te: ai kryesor funksionon si me pare, ai pa domain filtrohet ketu (te ruajturat hiqen pasi vijne).
+  const kerkoMeRezerve = async paDomain => {
+    const rez = await kerkoKompani(ndertoTrupin(paDomain, perjashtoId));
+    if (!rez.r.ok && rez.r.status === 400 && perjashtoId.length) {
+      const prove = await kerkoKompani(ndertoTrupin(paDomain, []));
+      if (prove.r.ok) { prove.rezerve = true; return prove; }
+    }
+    return rez;
+  };
   try {
-    const { r, perdorur } = await kerkoKompani(trupiBaze);
+    const { r, perdorur, rezerve } = await kerkoMeRezerve(false);
     if (!r.ok) return res.status([400, 401, 403, 429].includes(r.status) ? r.status : 502).json({ error: mesazhGabimiCrustdata(r), kredite_perdorur: r.kredite });
+    if (rezerve) shtoParalajmerim('Crustdata nuk e pranoi perjashtimin sipas ID; kerkimi u be pa te.');
     const kompanite = (Array.isArray(r.data.companies) ? r.data.companies : []).map(sheshoKompanine);
-    try { await ruajKompanite(kompanite, kategoria); } // ruhen gjithmone me te dhenat e plota (qe perjashtimi dhe "Te gjitha" te funksionojne)
-    catch (e) { paralajmerim = (paralajmerim ? paralajmerim + ' ' : '') + 'Historiku nuk u ruajt (' + e.message + ').'; }
+    // Kerkesa e dyte: vetem kompani PA domain (kane LinkedIn, por s'kane faqe ku te gjendet email). Nese ajo deshton, kerkimi kryesor mbetet.
+    let pa = null;
+    if (perfshiPaDomain) {
+      try {
+        const dyta = await kerkoMeRezerve(true);
+        if (dyta.r.ok) {
+          let lista = (Array.isArray(dyta.r.data.companies) ? dyta.r.data.companies : []).map(sheshoKompanine);
+          if (dyta.rezerve) {
+            const njohur = new Set(perjashtoId);
+            lista = lista.filter(k => !njohur.has(Number(k.id)));
+            shtoParalajmerim('Crustdata nuk e pranoi perjashtimin sipas ID per kompanite pa domain: te ruajturat u hoqen pasi erdhen, prandaj mund te dalin me pak se kerkove.');
+          }
+          pa = { kompanite: lista, kerkesa: kerkesePerShfaqje(dyta.perdorur.trupi), kredite: dyta.r.kredite, raw: dyta.r.data };
+        } else { shtoParalajmerim('Kerkesa per kompani pa domain nuk u krye: ' + mesazhGabimiCrustdata(dyta.r)); }
+      } catch (e) { shtoParalajmerim('Kerkesa per kompani pa domain nuk u krye (' + e.message + ').'); }
+    }
+    // Te dyja listat ruhen bashke: me domain te kompani_pare, pa domain te kompani_pa_domain (edhe rreshtat pa domain te kerkimit kryesor, nese Crustdata i ktheu).
+    const teGjitha = kompanite.concat(pa ? pa.kompanite : []);
+    try { await ruajKompanite(teGjitha, kategoria); } // ruhen gjithmone me te dhenat e plota (qe perjashtimi dhe "Te gjitha" te funksionojne)
+    catch (e) { shtoParalajmerim('Historiku nuk u ruajt (' + e.message + ').'); }
+    const krediteSecila = [r.kredite, pa ? pa.kredite : null];
+    const krediteTotal = krediteSecila.every(x => x == null) ? null : krediteSecila.reduce((s, x) => s + (x || 0), 0);
     res.json({
-      ok: true, kerkesa: kerkesePerShfaqje(perdorur.trupi), renditja: perdorur.sorts, kredite_perdorur: r.kredite,
-      total_count: r.data.total_count == null ? null : r.data.total_count, te_pare: fshihTePara ? perjashto.length : null,
-      paralajmerim, kategoria, kompanite, raw: r.data
+      ok: true, kerkesa: kerkesePerShfaqje(perdorur.trupi), renditja: perdorur.sorts, kredite_perdorur: krediteTotal,
+      total_count: r.data.total_count == null ? null : r.data.total_count, te_pare: fshihTePara ? perjashto.length + perjashtoId.length : null,
+      pa_domain_nr: teGjitha.filter(k => !normalizoDomain(k.domain)).length,
+      paralajmerim, kategoria, kompanite: teGjitha, raw: r.data,
+      kerkesa_pa_domain: pa ? pa.kerkesa : null, raw_pa_domain: pa ? pa.raw : null
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -1743,25 +1901,72 @@ app.post('/api/kompani-reja/kerko', async (req, res) => {
 app.post('/api/kompani-reja/pastro', async (req, res) => {
   try {
     // Nuk fshin asgje: vetem lejon qe kompanite e ruajtura (me email-et e tyre) te shfaqen serish te kerkimet.
+    // Ato te shenuara "perfunduar" mbeten te perjashtuara (i ke kontaktuar tashme).
     const r = await pool.query('UPDATE kompani_pare SET fshih = false');
-    res.json({ ok: true, liruar: r.rowCount == null ? null : r.rowCount });
+    let paDomain = 0;
+    try { const r2 = await pool.query('UPDATE kompani_pa_domain SET fshih = false'); paDomain = r2.rowCount || 0; } catch (e) { /* tabela e re mund te mungoje nese migrimi deshtoi */ }
+    res.json({ ok: true, liruar: r.rowCount == null ? null : r.rowCount, liruar_pa_domain: paDomain });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Te gjitha kompanite e ruajtura (edhe ato te gjeneruara me pare), me filtrin e email-it.
+// Statusi manual i nje kompanie qe kontaktohet jashte email-it (LinkedIn etj.): 'pa-perfunduar' ose 'perfunduar'.
+// Kompanite me domain identifikohen me domain (duhet te jete ne databaze), ato pa domain me ID-ne e Crustdata.
+app.post('/api/kompani-reja/statusi', async (req, res) => {
+  const b = req.body || {};
+  if (!KOMPANI_STATUSET.includes(b.statusi)) return res.status(400).json({ error: 'Statusi i pavlefshem.' });
+  try {
+    let r;
+    if (b.domain) {
+      const domain = normalizoDomain(b.domain);
+      if (!domain) return res.status(400).json({ error: 'Domain i pavlefshem.' });
+      r = await pool.query('UPDATE kompani_pare SET statusi = $2, statusi_at = now() WHERE domain = $1', [domain, b.statusi]);
+    } else {
+      const id = Number(b.id);
+      if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({ error: 'Id i pavlefshem.' });
+      r = await pool.query('UPDATE kompani_pa_domain SET statusi = $2, statusi_at = now() WHERE crustdata_id = $1', [id, b.statusi]);
+    }
+    if (!r.rowCount) return res.status(404).json({ error: 'Kompania nuk u gjet ne databaze.' });
+    res.json({ ok: true, statusi: b.statusi });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Te gjitha kompanite e ruajtura (edhe ato te gjeneruara me pare), me filtrin e email-it ose "pa-domain" (tabela e vecante), dhe filtrin e statusit.
 app.get('/api/kompani-reja/ruajtura', async (req, res) => {
   try {
     const q = req.query || {};
-    const filtri = ['me-email', 'pa-email'].includes(q.filtri) ? q.filtri : 'te-gjitha';
+    const filtri = ['me-email', 'pa-email', 'pa-domain'].includes(q.filtri) ? q.filtri : 'te-gjitha';
+    const statusi = KOMPANI_STATUSET.includes(q.statusi) ? q.statusi : null;
     const limit = Math.min(500, Math.max(1, parseInt(q.limit, 10) || 100));
     const offset = Math.max(0, parseInt(q.offset, 10) || 0);
-    const kushti = filtri === 'me-email' ? 'WHERE email IS NOT NULL' : filtri === 'pa-email' ? 'WHERE email IS NULL' : '';
+    const kStatusi = idx => "COALESCE(statusi, 'pa-perfunduar') = $" + idx; // idx = vendi i parametrit
+    const paramet = statusi ? [limit, offset, statusi] : [limit, offset];
+    if (filtri === 'pa-domain') {
+      const rows = (await pool.query(
+        "SELECT crustdata_id AS id, emri, website, viti, punonjes, shteti, qyteti, linkedin, twitter, kategoria, COALESCE(statusi, 'pa-perfunduar') AS statusi, gjetur_at " +
+        'FROM kompani_pa_domain ' + (statusi ? 'WHERE ' + kStatusi(3) : '') + ' ORDER BY gjetur_at DESC, crustdata_id LIMIT $1 OFFSET $2', paramet)).rows
+        .map(x => Object.assign(x, { id: Number(x.id), domain: null, pa_domain: true }));
+      const n = (await pool.query("SELECT COUNT(*)::int AS gjithsej, COUNT(*) FILTER (WHERE statusi = 'perfunduar')::int AS perfunduar FROM kompani_pa_domain")).rows[0] || {};
+      const gjithsej = n.gjithsej || 0, perfunduar = n.perfunduar || 0;
+      const totali = statusi === 'perfunduar' ? perfunduar : (statusi === 'pa-perfunduar' ? gjithsej - perfunduar : gjithsej);
+      return res.json({ ok: true, filtri, statusi, rows, gjithsej, perfunduar, pa_perfunduar: gjithsej - perfunduar, totali });
+    }
+    const kushte = [];
+    if (filtri === 'me-email') kushte.push('email IS NOT NULL'); else if (filtri === 'pa-email') kushte.push('email IS NULL');
+    const kushteRreshta = statusi ? kushte.concat([kStatusi(3)]) : kushte;
+    const kushti = kushteRreshta.length ? 'WHERE ' + kushteRreshta.join(' AND ') : '';
     const rows = (await pool.query(
-      'SELECT domain, emri, website, viti, punonjes, shteti, qyteti, linkedin, twitter, email, email_lloji, email_mx, email_burimi, email_gjendja, kategoria, gjetur_at ' +
-      'FROM kompani_pare ' + kushti + ' ORDER BY gjetur_at DESC, domain LIMIT $1 OFFSET $2', [limit, offset])).rows;
+      "SELECT domain, emri, website, viti, punonjes, shteti, qyteti, linkedin, twitter, email, email_lloji, email_mx, email_burimi, email_gjendja, kategoria, COALESCE(statusi, 'pa-perfunduar') AS statusi, gjetur_at " +
+      'FROM kompani_pare ' + kushti + ' ORDER BY gjetur_at DESC, domain LIMIT $1 OFFSET $2', paramet)).rows;
     const n = (await pool.query('SELECT COUNT(*)::int AS gjithsej, COUNT(email)::int AS me_email FROM kompani_pare')).rows[0] || {};
     const gjithsej = n.gjithsej || 0, meEmail = n.me_email || 0;
-    res.json({ ok: true, filtri, rows, gjithsej, me_email: meEmail, pa_email: gjithsej - meEmail });
+    let totali = filtri === 'me-email' ? meEmail : (filtri === 'pa-email' ? gjithsej - meEmail : gjithsej);
+    if (statusi) {
+      const kont = kushte.concat([kStatusi(1)]);
+      totali = (await pool.query('SELECT COUNT(*)::int AS n FROM kompani_pare WHERE ' + kont.join(' AND '), [statusi])).rows[0].n;
+    }
+    let paDomain = null; // sa kompani pa domain ka te ruajtura (per permbledhjen); nuk e prish pergjigjen nese tabela mungon
+    try { paDomain = (await pool.query('SELECT COUNT(*)::int AS n FROM kompani_pa_domain')).rows[0].n; } catch (e) { paDomain = null; }
+    res.json({ ok: true, filtri, statusi, rows, gjithsej, me_email: meEmail, pa_email: gjithsej - meEmail, totali, pa_domain: paDomain });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
