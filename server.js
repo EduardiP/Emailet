@@ -1332,19 +1332,18 @@ app.get('/', (req, res) => {
   </div>
 
   <div class="sec-panel" id="panelLancime">
-    <p class="mut">Produkte te reja nga Show HN (pjesa e Hacker News ku njerezit tregojne cfare sapo kane ndertuar). "Kerko domain-e" lexon postimet, heq ato qe nuk jane faqe produkti (GitHub, rrjete sociale, blogje...) dhe te jep vetem produktet qe s'i ke marre me pare, me kategori dhe B2B/B2C (nga AI, vetem nga titulli). Pa data merr te rejat; me data lexon vetem ate periudhe (maks. 31 dite). "Gjej emailet" kerkon vecmas email-in qe eshte SHKRUAR ne faqen e produkteve qe shfaqen; asnje email nuk hamendesohet.</p>
+    <p class="mut">Produkte te reja nga Show HN (pjesa e Hacker News ku njerezit tregojne cfare sapo kane ndertuar). "Kerko domain-e" lexon postimet, heq ato qe nuk jane faqe produkti (GitHub, rrjete sociale, blogje...) dhe te jep vetem produktet qe s'i ke marre me pare, me kategori dhe B2B/B2C (nga AI, vetem nga titulli). Pa data merr te rejat; me data lexon vetem ate periudhe (maks. 31 dite). "Gjej emailet" kerkon vecmas email-in qe eshte SHKRUAR ne faqen e produkteve qe shfaqen; asnje email nuk hamendesohet. "Shfaq te ruajturat (pa kerkuar)" nuk lexon asgje te re: tregon produktet e ruajtura (brenda datave nese i zgjedh), edhe ato qe i ke marre me pare. Filtri i email-it tregon vetem ato me email, ato ku nuk u gjet, ose ato qe ende nuk i ke kerkuar.</p>
     <div class="row">
       <div class="fusha"><span>Nga data (opsionale)</span><input type="date" id="lancimeNga" onchange="lancimeDataNdryshoi()" /></div>
       <div class="fusha"><span>Deri me date (opsionale)</span><input type="date" id="lancimeDeri" onchange="lancimeDataNdryshoi()" /></div>
+      <button id="lancimeRuajturaBtn" onclick="lancimeShfaqRuajturat()" style="background:#2a313c; align-self:flex-end;">Shfaq te ruajturat (pa kerkuar)</button>
     </div>
     <div class="row">
       <button id="lancimeKerkoBtn" onclick="lancimeKerko(this)">Kerko domain-e</button>
       <button id="lancimeEmailBtn" onclick="lancimeEmailet(this)" style="background:#2a313c;">Gjej emailet</button>
       <select id="lancimeKategoria" onchange="lancimeShfaq()"><option value="">Te gjitha kategorite</option></select>
       <select id="lancimeTipi" onchange="lancimeShfaq()"><option value="">B2B dhe B2C</option></select>
-    </div>
-    <div class="row">
-      <label class="bisChk"><input type="checkbox" id="lancimeTeGjitha" onchange="lancimeNgarko()" /> Shfaq te gjitha te ruajtura (edhe ato qe i kam marre me pare)</label>
+      <select id="lancimeEmail" onchange="lancimeShfaq()"><option value="">Email: te gjitha</option><option value="me-email">Vetem me email</option><option value="pa-email">Nuk u gjet emaili</option><option value="pa-kerkuar">Ende nuk eshte kerkuar</option></select>
     </div>
     <div id="lancimeStat" style="font-size:13px; color:#8b949e; margin-bottom:6px;"></div>
     <div id="lancimeKatInfo" style="font-size:13px; color:#8b949e; margin-bottom:12px;"></div>
@@ -1728,7 +1727,7 @@ var LANCIME_ARSYET = {
   dokumente: 'dokumente, studime dhe skedare (Wikipedia, arXiv, Notion, Figma...)',
   lajme: 'faqe lajmesh dhe katalogje (Crunchbase, G2, Forbes...)'
 };
-var lancimeSeq = 0, lancimeBusy = false, lancimeKatNr = 0, lancimeKatPaCeles = false, lancimeEmailLoop = false, lancimeEmailNdalo = false;
+var lancimeSeq = 0, lancimeBusy = false, lancimeKatNr = 0, lancimeKatPaCeles = false, lancimeEmailLoop = false, lancimeEmailNdalo = false, lancimeRuajtura = false;
 var lancimeD = { rows: [], totali: {}, gjendja: null, batch_at: null, pamja: 'e-fundit', pamja_gjithsej: 0, duke_lexuar: false };
 // Kohe ISO -> data e lexueshme ne oren e perdoruesit.
 function lancimeData(iso){
@@ -1750,14 +1749,22 @@ function lancimeDita(vlera, fundi){
 function lancimeBlloko(kerko, email){
   document.getElementById('lancimeKerkoBtn').disabled = kerko;
   document.getElementById('lancimeEmailBtn').disabled = email;
+  document.getElementById('lancimeRuajturaBtn').disabled = kerko;
 }
-// Ngarkon listen nga serveri (marrja e fundit, ose te gjitha te ruajturat nese kutia eshte e shenuar). tace = true: nuk e prek rreshtin e gjendjes.
+// Lexon pergjigjen si JSON. Kur serveri (ose Railway) ktheu tekst te thjeshte (p.sh. upstream error), kthen nje gabim te kuptueshem (jo_json = true) ne vend te "Unexpected token".
+async function lancimeJson(r){
+  var tekst = '';
+  try{ tekst = await r.text(); }catch(e){ return { error: 'Lidhja u nderpre. Provo serish.', jo_json: true }; }
+  try{ var d = JSON.parse(tekst); if(d && typeof d === 'object'){ return d; } }catch(e2){ /* jo JSON */ }
+  return { error: 'Serveri nuk u pergjigj si duhet (HTTP ' + r.status + '). Provo serish pas pak.', jo_json: true };
+}
+// Ngarkon listen nga serveri (marrja e fundit, ose te gjitha te ruajturat kur eshte shtypur "Shfaq te ruajturat"). tace = true: nuk e prek rreshtin e gjendjes.
 async function lancimeNgarko(tace){
   var nr = ++lancimeSeq;
   var stat = document.getElementById('lancimeStat');
   var shfaq = !tace && !lancimeBusy;
   if(shfaq){ stat.textContent = 'Po ngarkoj...'; }
-  var teGjitha = document.getElementById('lancimeTeGjitha').checked;
+  var teGjitha = lancimeRuajtura;
   var url = '/api/lancime?limit=1000&pamja=' + (teGjitha ? 'te-gjitha' : 'e-fundit');
   if(teGjitha){
     var n = lancimeDita(document.getElementById('lancimeNga').value, false), de = lancimeDita(document.getElementById('lancimeDeri').value, true);
@@ -1766,7 +1773,7 @@ async function lancimeNgarko(tace){
   }
   try{
     var r = await fetch(url);
-    var d = await r.json();
+    var d = await lancimeJson(r);
     if(nr !== lancimeSeq){ return null; }
     if(d.error){ if(!tace){ stat.textContent = 'Gabim: ' + d.error; } return null; }
     if(shfaq){ stat.textContent = ''; }
@@ -1776,9 +1783,14 @@ async function lancimeNgarko(tace){
     return d;
   }catch(e){ if(nr === lancimeSeq && !tace){ stat.textContent = 'Gabim rrjeti: ' + e.message; } return null; }
 }
-// Datat ndryshuan: kur lista e plote eshte e hapur, ato e filtrojne ate.
+// Datat ndryshuan: kur lista e ruajtur eshte e hapur, ato e filtrojne ate (pa lexuar asgje nga Show HN).
 function lancimeDataNdryshoi(){
-  if(document.getElementById('lancimeTeGjitha').checked){ lancimeNgarko(); }
+  if(lancimeRuajtura){ lancimeNgarko(); }
+}
+// Butoni "Shfaq te ruajturat (pa kerkuar)": tregon produktet e ruajtura brenda datave (ose te gjitha pa data), edhe ato qe i ke marre me pare. Nuk lexon Show HN dhe nuk shenon asgje si te marre.
+function lancimeShfaqRuajturat(){
+  lancimeRuajtura = true;
+  lancimeNgarko();
 }
 // Butoni 1: lexon Show HN dhe jep produktet qe nuk i ke marre me pare (brenda datave nese i ke zgjedhur). Pa email.
 async function lancimeKerko(btn){
@@ -1792,12 +1804,12 @@ async function lancimeKerko(btn){
   stat.textContent = 'Po lexoj Show HN (mund te marre disa sekonda)...';
   try{
     var r = await fetch('/api/lancime/kerko', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(trupi) });
-    var d = await r.json();
+    var d = await lancimeJson(r);
     if(d.error){ stat.textContent = 'Gabim: ' + d.error; }
     else {
       lancimeSeq++;
-      document.getElementById('lancimeTeGjitha').checked = false;
-      document.getElementById('lancimeKategoria').value = ''; document.getElementById('lancimeTipi').value = '';
+      lancimeRuajtura = false;
+      document.getElementById('lancimeKategoria').value = ''; document.getElementById('lancimeTipi').value = ''; document.getElementById('lancimeEmail').value = '';
       var rows = d.rows || [], g = d.gjendja || {}, t = d.totali || {};
       lancimeD = { rows: rows, totali: t, gjendja: g, batch_at: d.batch_at || null, pamja: 'e-fundit', pamja_gjithsej: rows.length, duke_lexuar: false };
       var tekst = 'U lexuan ' + (g.ngarkuar || 0) + ' postime Show HN. ';
@@ -1837,7 +1849,9 @@ async function lancimeGjejEmail(id){
     try{
       var r = await fetch('/api/lancime/email', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id: id }) });
       if(r.status === 429){ await new Promise(function(f){ setTimeout(f, 3000); }); continue; }
-      d = await r.json(); break;
+      d = await lancimeJson(r);
+      if(d.jo_json && provo < 3){ await new Promise(function(f){ setTimeout(f, 3000); }); continue; }
+      break;
     }catch(e){ d = { error: e.message }; break; }
   }
   if(!d){ d = { error: 'serveri eshte i zene, provo serish' }; }
@@ -1879,6 +1893,7 @@ async function lancimeEmailet(btn){
   try{ await Promise.all([puntor(), puntor(), puntor()]); }catch(e){ stat.textContent = 'Gabim: ' + e.message; }
   var ndalur = lancimeEmailNdalo, gabime = radhazi >= 5;
   lancimeEmailLoop = false; lancimeEmailNdalo = false; lancimeBusy = false;
+  var efs = document.getElementById('lancimeEmail'); if(efs.value === 'pa-kerkuar'){ efs.value = ''; } // ato qe u kerkuan nuk duhet te zhduken nga lista
   await lancimeNgarko(true);
   stat.textContent = 'Email te gjetur: ' + gjetur + ' nga ' + bere + ' faqe te lexuara' + (gabime ? '. U ndalua: shume gabime radhazi, provo me vone' : (ndalur && bere < ids.length ? '. E ndalova para se te mbaronin te gjitha' : '')) + '.';
   lancimeBlloko(false, false); btn.textContent = 'Gjej emailet';
@@ -1898,31 +1913,47 @@ function lancimePerditesoKategorite(harta){
     if(tt && x.tipi){ tt.textContent = x.tipi; }
   });
 }
-// Cakton kategorine dhe B2B/B2C (me AI, nga titulli) per produktet e shfaqura qe nuk i kane: grupe me 30, 3 njekohesisht. Nje shfaqje e re e ndalon ate te vjetren.
+// Cakton kategorine dhe B2B/B2C (me AI, nga titulli) per produktet e shfaqura qe nuk i kane: grupe me 20, 3 njekohesisht.
+// Nje gabim i perkohshem (p.sh. upstream error) provohet serish dy here; nese vazhdon, grupi anashkalohet dhe vazhdohet me te tjeret
+// (pas 3 grupeve radhazi te deshtuara ndalet). Ato qe mbeten pa klasifikim provohen serish sa here hapet skeda. Nje shfaqje e re e ndalon ate te vjetren.
 async function lancimeKategorizoRreshtat(){
   if(lancimeKatPaCeles){ return; }
-  var ids = (lancimeD.rows || []).filter(function(k){ return !k.kategoria || !k.tipi; }).map(function(k){ return k.id; });
-  if(!ids.length){ return; }
-  var nr = ++lancimeKatNr, grupe = [], i = 0, bere = 0, gabim = '';
   var info = document.getElementById('lancimeKatInfo');
-  for(var j = 0; j < ids.length; j += 30){ grupe.push(ids.slice(j, j + 30)); }
+  var ids = (lancimeD.rows || []).filter(function(k){ return !k.kategoria || !k.tipi; }).map(function(k){ return k.id; });
+  if(!ids.length){
+    // Asgje per te caktuar: ndalon nje kategorizim te vjeter (rreshtat e tij nuk shfaqen me) dhe fshin mesazhin e vjeter.
+    lancimeKatNr++;
+    info.textContent = (lancimeD.rows || []).length ? 'Kategorite dhe B2B/B2C jane caktuar nga AI vetem nga titulli: mund te gabojne.' : '';
+    return;
+  }
+  var nr = ++lancimeKatNr, grupe = [], i = 0, bere = 0, dosje = 0, radhazi = 0, ndalur = false, gabim = '';
+  for(var j = 0; j < ids.length; j += 20){ grupe.push(ids.slice(j, j + 20)); }
   info.textContent = 'Po caktoj kategorite dhe B2B/B2C 0/' + ids.length + '...';
   var puntor = async function(){
-    while(i < grupe.length && nr === lancimeKatNr && !gabim){
-      var g = grupe[i++];
-      try{
-        var r = await fetch('/api/lancime/kategorizo', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ ids: g }) });
-        var d = await r.json();
-        if(d.error){ if(d.pa_celes){ lancimeKatPaCeles = true; } gabim = d.error; break; }
-        lancimePerditesoKategorite(d.rezultat || {});
-        bere += g.length;
-        if(nr === lancimeKatNr){ info.textContent = 'Po caktoj kategorite dhe B2B/B2C ' + Math.min(bere, ids.length) + '/' + ids.length + '...'; }
-      }catch(e){ gabim = e.message; }
+    while(i < grupe.length && nr === lancimeKatNr && !ndalur){
+      var g = grupe[i++], mbaroi = false, gabimi = '';
+      for(var provo = 0; provo < 3 && !mbaroi && !ndalur && nr === lancimeKatNr; provo++){
+        if(provo > 0){ await new Promise(function(f){ setTimeout(f, provo * 3000); }); }
+        try{
+          var r = await fetch('/api/lancime/kategorizo', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ ids: g }) });
+          var d = await lancimeJson(r);
+          if(!d.error){ lancimePerditesoKategorite(d.rezultat || {}); mbaroi = true; continue; }
+          gabimi = d.error;
+          if(d.pa_celes){ lancimeKatPaCeles = true; ndalur = true; }
+          else if(r.status >= 400 && r.status < 500){ break; }
+        }catch(e){ gabimi = e.message; }
+      }
+      if(mbaroi){ bere += g.length; radhazi = 0; }
+      else { dosje += g.length; radhazi++; gabim = gabimi; if(radhazi >= 3){ ndalur = true; } }
+      if(nr === lancimeKatNr){ info.textContent = 'Po caktoj kategorite dhe B2B/B2C ' + Math.min(bere + dosje, ids.length) + '/' + ids.length + '...'; }
     }
   };
   await Promise.all([puntor(), puntor(), puntor()]);
   if(nr !== lancimeKatNr){ return; }
-  info.textContent = gabim ? ('Kategorite dhe B2B/B2C nuk u caktuan te gjitha: ' + gabim) : 'Kategorite dhe B2B/B2C jane caktuar nga AI vetem nga titulli: mund te gabojne.';
+  var mbetur = ids.length - bere;
+  if(lancimeKatPaCeles){ info.textContent = 'Kategorite dhe B2B/B2C nuk caktohen: ' + gabim; }
+  else if(mbetur > 0){ info.textContent = 'Kategorite dhe B2B/B2C nuk u caktuan per ' + mbetur + ' produkte (' + gabim + '). Hape serish skeden Lancime per te provuar prape.'; }
+  else { info.textContent = 'Kategorite dhe B2B/B2C jane caktuar nga AI vetem nga titulli: mund te gabojne.'; }
   lancimeShfaq();
 }
 // Kutia e testit te burimit (e mbyllur): nje rresht permbledhje, dhe me klik detajet e leximit te fundit.
@@ -1963,12 +1994,19 @@ function lancimeShfaqTestin(g){
   det.appendChild(box);
   kuti.appendChild(det);
 }
-// Rreshtat e shfaqur = ata te listes qe kalojne filtrat e kategorise dhe te B2B/B2C (__pa__ = ende pa caktuar).
+// Gjendja e email-it per filtrin: me-email | pa-email (u kerkua por nuk u gjet, ose faqja nuk u hap) | pa-kerkuar.
+function lancimeEmailGjendja(k){
+  if(k.email){ return 'me-email'; }
+  return (k.email_gjendja || 'pa-kerkuar') === 'pa-kerkuar' ? 'pa-kerkuar' : 'pa-email';
+}
+var LANCIME_EMAIL_EMRAT = { 'me-email': 'vetem me email', 'pa-email': 'nuk u gjet emaili', 'pa-kerkuar': 'ende nuk eshte kerkuar' };
+// Rreshtat e shfaqur = ata te listes qe kalojne filtrat e kategorise, te B2B/B2C dhe te email-it (__pa__ = ende pa caktuar).
 function lancimeRreshtat(){
-  var kat = document.getElementById('lancimeKategoria').value, tip = document.getElementById('lancimeTipi').value;
+  var kat = document.getElementById('lancimeKategoria').value, tip = document.getElementById('lancimeTipi').value, em = document.getElementById('lancimeEmail').value;
   return (lancimeD.rows || []).filter(function(k){
     if(kat && (kat === '__pa__' ? !!k.kategoria : k.kategoria !== kat)){ return false; }
     if(tip && (tip === '__pa__' ? !!k.tipi : k.tipi !== tip)){ return false; }
+    if(em && lancimeEmailGjendja(k) !== em){ return false; }
     return true;
   });
 }
@@ -1995,7 +2033,16 @@ function lancimeShfaq(){
   });
   lancimeZgjedhesi(document.getElementById('lancimeKategoria'), 'Te gjitha kategorite (' + rows.length + ')', numrat, paKat);
   lancimeZgjedhesi(document.getElementById('lancimeTipi'), 'B2B dhe B2C (' + rows.length + ')', numraT, paTip);
-  var zgj = document.getElementById('lancimeKategoria').value, zgjT = document.getElementById('lancimeTipi').value;
+  var nrEm = { 'me-email': 0, 'pa-email': 0, 'pa-kerkuar': 0 };
+  rows.forEach(function(k){ nrEm[lancimeEmailGjendja(k)]++; });
+  var selE = document.getElementById('lancimeEmail'), zgjE0 = selE.value;
+  selE.innerHTML = '';
+  [['', 'Email: te gjitha (' + rows.length + ')'], ['me-email', 'Vetem me email (' + nrEm['me-email'] + ')'], ['pa-email', 'Nuk u gjet emaili (' + nrEm['pa-email'] + ')'], ['pa-kerkuar', 'Ende nuk eshte kerkuar (' + nrEm['pa-kerkuar'] + ')']].forEach(function(x){
+    var o = document.createElement('option'); o.value = x[0]; o.textContent = x[1]; selE.appendChild(o);
+  });
+  selE.value = zgjE0;
+  if(selE.selectedIndex < 0){ selE.value = ''; }
+  var zgj = document.getElementById('lancimeKategoria').value, zgjT = document.getElementById('lancimeTipi').value, zgjE = selE.value;
   var pamja = lancimeRreshtat();
   document.getElementById('lancimeInfo').textContent = 'Te ruajtura: ' + (t.dukshme || 0) + ' | te marra: ' + ((t.dukshme || 0) - (t.pa_marre || 0)) + ' | ende pa marre: ' + (t.pa_marre || 0) +
     ' | me email: ' + (t.me_email || 0) + ' | te fshehura: ' + (t.nendomain || 0) + ' nendomain falas (vercel.app, github.io...) dhe ' + (t.te_njohura || 0) + ' qe i ke tashme nga Exa/Crustdata';
@@ -2015,13 +2062,13 @@ function lancimeShfaq(){
   } else {
     krye.textContent = 'Produktet qe sapo i more:';
   }
-  if(zgj || zgjT){ krye.textContent += ' | filtri: ' + [zgj ? (zgj === '__pa__' ? 'pa kategori' : zgj) : '', zgjT ? (zgjT === '__pa__' ? 'pa B2B/B2C' : zgjT) : ''].filter(Boolean).join(', ') + ' (' + pamja.length + ' produkte)'; }
+  if(zgj || zgjT || zgjE){ krye.textContent += ' | filtri: ' + [zgj ? (zgj === '__pa__' ? 'pa kategori' : zgj) : '', zgjT ? (zgjT === '__pa__' ? 'pa B2B/B2C' : zgjT) : '', zgjE ? LANCIME_EMAIL_EMRAT[zgjE] : ''].filter(Boolean).join(', ') + ' (' + pamja.length + ' produkte)'; }
   rez.appendChild(krye);
   if(!rows.length){
     var bosh = document.createElement('div'); bosh.style.cssText = 'font-size:13px; color:#8b949e; margin-top:6px;';
     if(d.pamja === 'te-gjitha'){ bosh.textContent = 'Asnje produkt i ruajtur ne kete pamje.'; }
     else if(!t.dukshme){ bosh.textContent = t.gjithsej ? 'Asnje produkt i dukshem. Ato qe ekzistojne jane fshehur (nendomain falas ose qe i ke tashme).' : 'Asnje produkt i ruajtur ende. Shtyp Kerko domain-e.'; }
-    else if(!t.pa_marre){ bosh.textContent = 'Asnje produkt i ri. Te gjitha te ruajturat tashme i ke marre me pare. Per ti shfaqur, shenoje kutine "Shfaq te gjitha te ruajtura".'; }
+    else if(!t.pa_marre){ bosh.textContent = 'Asnje produkt i ri. Te gjitha te ruajturat tashme i ke marre me pare. Per ti shfaqur, shtyp "Shfaq te ruajturat (pa kerkuar)".'; }
     else { bosh.textContent = 'Shtyp Kerko domain-e per te marre produktet qe nuk i ke marre ende.'; }
     rez.appendChild(bosh); return;
   }
@@ -2936,4 +2983,8 @@ app.post('/api/lancime/email', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => { console.log('Zbulim Bizneseh po punon ne portin ' + PORT); nisAlertePoll(); nisLancimePoll(); });
+const serveriHttp = app.listen(PORT, () => { console.log('Zbulim Bizneseh po punon ne portin ' + PORT); nisAlertePoll(); nisLancimePoll(); });
+// Railway i mban lidhjet e lira hapur 60 s, ndersa Node i mbyll pas 5 s: nganjehere kerkesa dergohet ne nje lidhje qe sapo u mbyll dhe del "upstream error".
+// Lidhjet mbahen me gjate se 60 s qe ta mbylle Railway i pari.
+serveriHttp.keepAliveTimeout = 65000;
+serveriHttp.headersTimeout = 70000;
