@@ -1,5 +1,5 @@
 // Mjet zbulimi bizneseh — Exa API (zbulim) + OpenAI (filtrim AI) + Generect (email) + PostgreSQL.
-// Variabla mjedisi te kerkuara ne Railway: EXA_API_KEY, OPENAI_API_KEY, GENERECT_API_KEY, DATABASE_URL, SERPER_API_KEY (per tab-in Bisedat), CRUSTDATA_API_KEY (per tab-in Kompani te reja), GOOGLE_ALERTS_FEEDS (per tab-in Alerte).
+// Variabla mjedisi te kerkuara ne Railway: EXA_API_KEY, OPENAI_API_KEY, GENERECT_API_KEY, DATABASE_URL, SERPER_API_KEY (per tab-in Bisedat), CRUSTDATA_API_KEY (per tab-in Kompani te reja), GOOGLE_ALERTS_FEEDS (per tab-in Alerte). Opsionale per tab-in Lancime: LANCIME_POLL_MINUTES (paracaktim 30; 0 = vetem me butonin), LANCIME_ZILE (leximi i pare, sa dite mbrapa, paracaktim 7).
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -66,6 +66,40 @@ pool.query(`CREATE TABLE IF NOT EXISTS alerte_rezultate (
   .then(() => pool.query(`ALTER TABLE alerte_rezultate ADD COLUMN IF NOT EXISTS alertet TEXT[] DEFAULT '{}'`))
   .then(() => pool.query(`UPDATE alerte_rezultate SET alertet = ARRAY[alerti] WHERE COALESCE(cardinality(alertet), 0) = 0 AND COALESCE(alerti, '') <> ''`))
   .catch(e => console.error('migrim alerte_rezultate:', e.message));
+// Produktet e reja nga Show HN (Hacker News), per tab-in "Lancime". Nje rresht per domain (domain UNIQUE = pa dublikate).
+// domain_vetjak = false kur lidhja eshte nendomain falas i nje platforme hosting (foo.vercel.app, foo.github.io).
+// email_*: rezultati i gjetjes se email-it nga faqja e produktit (e njejta gjetje si te "Kompani te reja"); email_gjendja: pa-kerkuar | u-gjet | pa-email | gabim.
+pool.query(`CREATE TABLE IF NOT EXISTS lancime_reja (
+  id SERIAL PRIMARY KEY,
+  domain TEXT UNIQUE NOT NULL,
+  domain_vetjak BOOLEAN DEFAULT true,
+  url TEXT,
+  emri TEXT,
+  pershkrimi TEXT,
+  titulli TEXT,
+  burimi TEXT DEFAULT 'show_hn',
+  postimi_url TEXT,
+  hn_id BIGINT,
+  autori TEXT,
+  piket INTEGER,
+  komente INTEGER,
+  publikuar TIMESTAMPTZ,
+  gjetur_at TIMESTAMPTZ DEFAULT now(),
+  email TEXT,
+  email_lloji TEXT,
+  email_mx BOOLEAN,
+  email_burimi TEXT,
+  email_gjendja TEXT DEFAULT 'pa-kerkuar',
+  email_at TIMESTAMPTZ
+)`)
+  .then(() => pool.query(`CREATE INDEX IF NOT EXISTS lancime_reja_publikuar_idx ON lancime_reja (publikuar DESC)`))
+  .catch(e => console.error('migrim lancime_reja:', e.message));
+// Kursori i leximit (koha e postimit me te ri qe e kemi perpunuar): pas rinisjes leximi vazhdon nga aty ku mbeti.
+pool.query(`CREATE TABLE IF NOT EXISTS lancime_gjendja (
+  celesi TEXT PRIMARY KEY,
+  vlera TEXT,
+  perditesuar TIMESTAMPTZ DEFAULT now()
+)`).catch(e => console.error('migrim lancime_gjendja:', e.message));
 
 function domainNga(url) {
   try {
@@ -857,6 +891,229 @@ function nisAlertePoll() {
   setInterval(ekzekuto, minuta * 60 * 1000).unref();
 }
 
+// ===== LANCIME: produktet e reja nga Show HN (Hacker News) =====
+// Show HN = seksioni i Hacker News ku njerezit tregojne cfare sapo kane ndertuar. Burimi: Algolia HN Search API (falas, pa celes).
+// Leximi merr vetem postimet pas kursorit (te rejat), nxjerr domain-in e produktit, heq zhurmen (GitHub, rrjete sociale, dyqane
+// aplikacionesh...) dhe ruan nje rresht per domain. Ato qe i ke tashme te ruajtura (Exa, Crustdata) fshihen kur shfaqen, jo kur ruhen,
+// qe lista te mbetet e sakte edhe pasi tabet e tjera shtojne rreshta.
+const LANCIME_API = 'https://hn.algolia.com/api/v1';
+const LANCIME_EMAIL_MAKS = 50; // sa faqe kerkohen per email me nje shtypje te butonit
+const LANCIME_PERKRYERJE = 300; // sekonda: leximi fillon pak para kursorit, qe postimet qe hyjne me vone ne indeksin e Algolia te mos humbasin
+const LANCIME_KURSORI = 'show_hn_kursori';
+const lancimeGjendja = { fundit: null, zile: null, ms: 0, ngarkuar: 0, faqe: 0, vetjak: 0, nendomain: 0, te_reja: 0, ekzistonin: 0, dublikat_brenda: 0, arsyet: {}, kufizuar: false, gabim: null };
+let lancimeDuke = false;
+
+// Platforma ku cdo perdorues merr nendomain falas (foo.vercel.app): domain-i ruhet me host te plote, jo "vercel.app",
+// qe dy produkte te ndryshme te mos bashkohen si dublikat. Shfaqen vetem kur zgjidhet "Perfshi edhe nendomain falas".
+const LANCIME_HOSTING = ['github.io', 'gitlab.io', 'vercel.app', 'netlify.app', 'pages.dev', 'workers.dev', 'herokuapp.com', 'onrender.com',
+  'fly.dev', 'railway.app', 'web.app', 'firebaseapp.com', 'streamlit.app', 'replit.app', 'repl.co', 'glitch.me', 'framer.website', 'framer.app',
+  'webflow.io', 'wixsite.com', 'carrd.co', 'lovable.app', 'bolt.host', 'surge.sh', 'ngrok.io', 'ngrok-free.app', 'trycloudflare.com',
+  'amplifyapp.com', 'azurewebsites.net', 'pythonanywhere.com', 'koyeb.app', 'zeabur.app', 'deno.dev', 'val.run', 'hf.space', 'bubbleapps.io',
+  'appspot.com', 'run.app', 'ondigitalocean.app'];
+// Prapashtesa me dy pjese ku domain-i i regjistruar ka tre pjese (foo.co.uk). Lista e shkurter, jo gjithe lista publike.
+const LANCIME_SUFIKSE2 = new Set(['co.uk', 'org.uk', 'ac.uk', 'gov.uk', 'me.uk', 'ltd.uk', 'com.au', 'net.au', 'org.au', 'edu.au', 'gov.au', 'co.nz', 'org.nz',
+  'net.nz', 'co.jp', 'ne.jp', 'or.jp', 'co.in', 'net.in', 'org.in', 'com.br', 'net.br', 'org.br', 'com.mx', 'com.ar', 'com.co', 'com.pe', 'com.tr',
+  'org.tr', 'com.cn', 'net.cn', 'org.cn', 'com.hk', 'com.tw', 'com.sg', 'com.my', 'com.ph', 'com.vn', 'com.pk', 'com.bd', 'com.ng', 'co.za', 'org.za',
+  'co.ke', 'co.il', 'org.il', 'co.kr', 'or.kr', 'co.id', 'co.th', 'com.eg', 'com.sa', 'com.ua', 'com.pl', 'com.pt', 'com.ru', 'com.gr', 'com.es']);
+// Domain-et qe nuk jane faqe produkti. Celesi del te "Testi i burimit" si arsye e heqjes; pas ketyre kontrollohet edhe DOMAIN_ZHURME (arsyeja "lajme").
+const LANCIME_ZHURME = {
+  kod: ['github.com', 'githubusercontent.com', 'gitlab.com', 'bitbucket.org', 'codeberg.org', 'sr.ht', 'sourceforge.net', 'gitee.com', 'huggingface.co',
+    'kaggle.com', 'replit.com', 'codesandbox.io', 'stackblitz.com', 'codepen.io', 'jsfiddle.net', 'observablehq.com', 'npmjs.com', 'pypi.org', 'crates.io',
+    'rubygems.org', 'pkg.go.dev', 'packagist.org', 'nuget.org', 'hex.pm', 'pub.dev', 'docs.rs', 'readthedocs.io'],
+  rrjete_blogje: ['twitter.com', 'x.com', 'linkedin.com', 'facebook.com', 'instagram.com', 'tiktok.com', 'reddit.com', 'youtube.com', 'youtu.be', 'vimeo.com',
+    'twitch.tv', 't.me', 'discord.com', 'discord.gg', 'bsky.app', 'mastodon.social', 'threads.net', 'ycombinator.com', 'producthunt.com', 'indiehackers.com',
+    'lobste.rs', 'dev.to', 'hashnode.com', 'hashnode.dev', 'medium.com', 'substack.com', 'wordpress.com', 'blogspot.com', 'tumblr.com', 'beehiiv.com',
+    'ghost.io', 'bearblog.dev'],
+  platforma: ['apple.com', 'google.com', 'mozilla.org', 'microsoft.com', 'visualstudio.com', 'steampowered.com', 'itch.io', 'flathub.org', 'snapcraft.io'],
+  dokumente: ['wikipedia.org', 'arxiv.org', 'doi.org', 'biorxiv.org', 'ssrn.com', 'researchgate.net', 'openreview.net', 'archive.org', 'nature.com',
+    'sciencedirect.com', 'acm.org', 'ieee.org', 'notion.so', 'notion.site', 'figma.com', 'airtable.com', 'amazonaws.com', 'cloudfront.net']
+};
+function arsyejaZhurmes(domain) {
+  for (const arsyeja of Object.keys(LANCIME_ZHURME)) {
+    if (LANCIME_ZHURME[arsyeja].some(z => domain === z || domain.endsWith('.' + z))) return arsyeja;
+  }
+  if (DOMAIN_ZHURME.some(z => domain === z || domain.endsWith('.' + z))) return 'lajme';
+  return null;
+}
+
+// Nxjerr domain-in e produktit nga lidhja. Kthen { domain, vetjak } ose { arsyeja } kur lidhja s'ka domain te perdorshem.
+function domainILancimit(lidhja) {
+  let u;
+  try { u = new URL(String(lidhja).trim()); } catch (e) { return { arsyeja: 'link_i_pavlefshem' }; }
+  if (!/^https?:$/.test(u.protocol)) return { arsyeja: 'link_i_pavlefshem' };
+  const host = u.hostname.toLowerCase().replace(/\.$/, '').replace(/^www\./, '');
+  if (!host.includes('.') || net.isIP(host.replace(/^\[|\]$/g, '')) || /\.(local|localhost|internal|test|invalid|example)$/.test(host)) return { arsyeja: 'pa_domain' };
+  const hosting = LANCIME_HOSTING.find(h => host === h || host.endsWith('.' + h));
+  if (hosting) {
+    if (host === hosting) return { arsyeja: 'pa_domain' }; // faqja e vete e platformes, jo nje produkt
+    const pjeset = host.slice(0, host.length - hosting.length - 1).split('.');
+    return { domain: pjeset[pjeset.length - 1] + '.' + hosting, vetjak: false };
+  }
+  const pjeset = host.split('.');
+  const dy = pjeset.slice(-2).join('.');
+  return { domain: LANCIME_SUFIKSE2.has(dy) && pjeset.length >= 3 ? pjeset.slice(-3).join('.') : dy, vetjak: true };
+}
+
+function pastroTitullinHN(t) {
+  return String(t || '').replace(/\u0000/g, '').replace(/^\s*show\s+hn\s*[:–—-]\s*/i, '').replace(/\s+/g, ' ').trim();
+}
+// "Foretype: type on remote machines..." -> emri "Foretype". Pa ndarje te qarte, emri merret nga domain-i dhe titulli mbetet pershkrim.
+function ndajTitullin(titulli, domain) {
+  const m = titulli.match(/^(.{1,40}?)(?:\s+[–—-]\s+|\s*:\s+|\s+\|\s+)(.+)$/);
+  if (m && m[1].trim().split(/\s+/).length <= 4 && !/^(i|my|we|a|an|the|how|why|what|using|building|making)\b/i.test(m[1].trim())) {
+    return { emri: m[1].trim(), pershkrimi: m[2].trim() };
+  }
+  const k = titulli.match(/^([A-Za-z0-9][\w.+-]{0,29}),\s+(.+)$/);
+  if (k) return { emri: k[1], pershkrimi: k[2].trim() };
+  return { emri: domain.split('.')[0], pershkrimi: titulli };
+}
+
+// Nje postim Show HN -> { ok: true, domain, rresht } ose { ok: false, arsyeja } (arsyeja numerohet te "Testi i burimit").
+function vleresoLancimin(h) {
+  const lidhja = h && typeof h.url === 'string' ? h.url.replace(/\u0000/g, '').trim() : ''; // NUL nuk pranohet nga Postgres: nje i tille do te bllokonte gjithe grupin
+  if (!lidhja) return { ok: false, arsyeja: 'pa_link' };
+  const d = domainILancimit(lidhja);
+  if (!d.domain) return { ok: false, arsyeja: d.arsyeja };
+  const zhurme = d.vetjak ? arsyejaZhurmes(d.domain) : null;
+  if (zhurme) return { ok: false, arsyeja: zhurme };
+  const titulli = pastroTitullinHN(h.title);
+  const nd = ndajTitullin(titulli, d.domain);
+  const id = String(h.objectID || h.story_id || '');
+  const hnOk = /^\d+$/.test(id);
+  const koha = Number(h.created_at_i);
+  return {
+    ok: true, domain: d.domain,
+    rresht: {
+      domain: d.domain, vetjak: d.vetjak, url: lidhja.slice(0, 600), emri: nd.emri.slice(0, 120), pershkrimi: nd.pershkrimi.slice(0, 300), titulli: titulli.slice(0, 300),
+      postimi_url: hnOk ? 'https://news.ycombinator.com/item?id=' + id : null, hn_id: hnOk ? Number(id) : null,
+      autori: String(h.author || '').replace(/\u0000/g, '').slice(0, 60) || null,
+      piket: Number.isInteger(h.points) ? h.points : null, komente: Number.isInteger(h.num_comments) ? h.num_comments : null,
+      publikuar: Number.isFinite(koha) && koha > 0 ? new Date(koha * 1000).toISOString() : (h.created_at || null)
+    }
+  };
+}
+
+async function merrKursorinLancime() {
+  const r = await pool.query('SELECT vlera FROM lancime_gjendja WHERE celesi = $1', [LANCIME_KURSORI]);
+  const n = r.rows.length ? Number(r.rows[0].vlera) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+async function ruajKursorinLancime(vlera) {
+  await pool.query('INSERT INTO lancime_gjendja (celesi, vlera) VALUES ($1, $2) ON CONFLICT (celesi) DO UPDATE SET vlera = EXCLUDED.vlera, perditesuar = now()', [LANCIME_KURSORI, String(vlera)]);
+}
+
+// Merr postimet Show HN me te reja se "nga" (sekonda Unix), me te rejat e para. Algolia kthen maks. 1000 rezultate per kerkese (10 faqe x 100),
+// prandaj kur dritarja ka me shume, merret copa tjeter (vetem me te vjetrat se ajo qe u mor) deri sa mbaron dritarja. Kufiri i sigurise: 8 copa.
+async function terhiqPostimetShowHN(nga) {
+  const hits = new Map(); // objectID -> postimi (e njejta sekonde ne kufirin mes dy copave mund ta jape dy here)
+  let faqe = 0, kufizuar = false, deri = null;
+  for (let copa = 0; copa < 8; copa++) {
+    // "<" me deri + 1 (sekondat jane numra te plote) ne vend te "<=": perdoret vetem operatori i dokumentuar per HN (created_at_i>X,created_at_i<Y).
+    const filtri = 'created_at_i>' + nga + (deri !== null ? ',created_at_i<' + (deri + 1) : '');
+    let kaMe = false, mbaroi = false, meEVjetra = Infinity;
+    for (let p = 0; p < 10; p++) {
+      const params = new URLSearchParams({ tags: 'show_hn', numericFilters: filtri, hitsPerPage: '100', page: String(p) });
+      let r;
+      try {
+        r = await fetchMeKohe(LANCIME_API + '/search_by_date?' + params.toString(), { headers: { 'accept': 'application/json', 'user-agent': 'biznes-finder (Show HN reader)' } }, 20000);
+      } catch (e) { throw new Error('Algolia HN nuk u arrit: ' + (e.name === 'AbortError' ? 'koha mbaroi' : e.message)); }
+      if (!r.ok) throw new Error('Algolia HN: HTTP ' + r.status);
+      const d = await r.json().catch(() => null);
+      if (!d || !Array.isArray(d.hits)) throw new Error('Algolia HN: pergjigje e papritur');
+      faqe++;
+      for (const h of d.hits) {
+        if (!h || typeof h !== 'object') continue;
+        hits.set(String(h.objectID != null ? h.objectID : 'x' + hits.size), h);
+        const t = Number(h.created_at_i);
+        if (Number.isFinite(t) && t < meEVjetra) meEVjetra = t;
+      }
+      if (p + 1 >= (Number(d.nbPages) || 0)) {
+        // Algolia e kufizon nbPages ne 10 (1000 rezultate), por nbHits tregon sa ka vertet: kur ka me shume se sa lexuam, ka akoma postime me te vjetra.
+        const total = Number(d.nbHits);
+        kaMe = Number.isFinite(total) ? total > (p + 1) * 100 : p === 9;
+        mbaroi = true;
+        break;
+      }
+    }
+    if (!mbaroi) kaMe = true; // 10 faqe te plota dhe API thote se ka akoma faqe
+    if (!kaMe) break; // dritarja u mor e gjitha
+    if (!Number.isFinite(meEVjetra) || (deri !== null && meEVjetra >= deri) || copa === 7) { kufizuar = true; break; }
+    deri = meEVjetra;
+  }
+  return { hits: Array.from(hits.values()), faqe, kufizuar };
+}
+
+// Nje lexim: opsione.zile (1-14) terheq prapa ate dite pa marre parasysh kursorin (per testim); pa te, merr postimet pas kursorit (me 5 minuta perkryerje).
+// Ruan nje rresht per domain te ri dhe kthen statistikat qe shfaqen te "Testi i burimit".
+async function lexoShowHN(opsione) {
+  if (lancimeDuke) { const e = new Error('Po lexohet tashme. Prit sa te perfundoje.'); e.kodi = 'DUKE_PUNUAR'; throw e; }
+  lancimeDuke = true;
+  const fillimi = Date.now();
+  const gj = { fundit: new Date().toISOString(), zile: null, ms: 0, ngarkuar: 0, faqe: 0, vetjak: 0, nendomain: 0, te_reja: 0, ekzistonin: 0, dublikat_brenda: 0, arsyet: {}, kufizuar: false, gabim: null };
+  try {
+    const tani = Math.floor(Date.now() / 1000);
+    let nga;
+    if (opsione && opsione.zile) { gj.zile = opsione.zile; nga = tani - opsione.zile * 86400; }
+    else {
+      const k = await merrKursorinLancime();
+      if (k) nga = Math.max(0, k - LANCIME_PERKRYERJE); // rreshtat e lexuar me pare nuk dublikohen (domain UNIQUE): dalin si "ekzistonin"
+      else { gj.zile = Math.min(14, Math.max(1, parseInt(process.env.LANCIME_ZILE, 10) || 7)); nga = tani - gj.zile * 86400; }
+    }
+    const { hits, faqe, kufizuar } = await terhiqPostimetShowHN(nga);
+    gj.ngarkuar = hits.length; gj.faqe = faqe; gj.kufizuar = kufizuar;
+    // Me e vjetra e para: kush e lancoi i pari nje domain e mban rreshtin; postimet e tjera te po atij domain-i numerohen si dublikat.
+    hits.sort((a, b) => (Number(a.created_at_i) || 0) - (Number(b.created_at_i) || 0));
+    const kandidatet = new Map();
+    for (const h of hits) {
+      const v = vleresoLancimin(h);
+      if (!v.ok) { gj.arsyet[v.arsyeja] = (gj.arsyet[v.arsyeja] || 0) + 1; continue; }
+      if (kandidatet.has(v.domain)) { gj.dublikat_brenda++; continue; }
+      kandidatet.set(v.domain, v.rresht);
+    }
+    const rreshta = Array.from(kandidatet.values());
+    gj.vetjak = rreshta.filter(x => x.vetjak).length;
+    gj.nendomain = rreshta.length - gj.vetjak;
+    if (rreshta.length) {
+      const A = { d: [], v: [], ur: [], e: [], p: [], t: [], pu: [], hn: [], a: [], pk: [], k: [], pb: [] };
+      for (const x of rreshta) {
+        A.d.push(x.domain); A.v.push(x.vetjak); A.ur.push(x.url); A.e.push(x.emri); A.p.push(x.pershkrimi); A.t.push(x.titulli);
+        A.pu.push(x.postimi_url); A.hn.push(x.hn_id); A.a.push(x.autori); A.pk.push(x.piket); A.k.push(x.komente); A.pb.push(x.publikuar);
+      }
+      const r = await pool.query(
+        'INSERT INTO lancime_reja (domain, domain_vetjak, url, emri, pershkrimi, titulli, postimi_url, hn_id, autori, piket, komente, publikuar) ' +
+        'SELECT u.d, u.v, u.ur, u.e, u.p, u.t, u.pu, u.hn, u.a, u.pk, u.k, u.pb FROM UNNEST($1::text[], $2::boolean[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::bigint[], $9::text[], $10::int[], $11::int[], $12::timestamptz[]) ' +
+        'AS u(d, v, ur, e, p, t, pu, hn, a, pk, k, pb) ON CONFLICT (domain) DO NOTHING RETURNING domain',
+        [A.d, A.v, A.ur, A.e, A.p, A.t, A.pu, A.hn, A.a, A.pk, A.k, A.pb]);
+      gj.te_reja = r.rowCount || 0;
+      gj.ekzistonin = rreshta.length - gj.te_reja;
+    }
+    // Kursori levizet vetem pas ruajtjes me sukses, dhe vetem perpara.
+    const meERe = hits.reduce((m, h) => Math.max(m, Number(h.created_at_i) || 0), 0);
+    if (meERe) { const vjeter = await merrKursorinLancime(); if (!vjeter || meERe > vjeter) await ruajKursorinLancime(meERe); }
+  } catch (e) {
+    gj.gabim = String(e.message || e);
+    gj.ms = Date.now() - fillimi;
+    Object.assign(lancimeGjendja, gj);
+    throw e;
+  } finally { lancimeDuke = false; }
+  gj.ms = Date.now() - fillimi;
+  Object.assign(lancimeGjendja, gj);
+  return gj;
+}
+
+// Leximi automatik: 45 sekonda pas nisjes, pastaj cdo LANCIME_POLL_MINUTES minuta (paracaktim 30, minimum 5; 0 = i fikur, vetem me butonin).
+function nisLancimePoll() {
+  const env = String(process.env.LANCIME_POLL_MINUTES == null ? '' : process.env.LANCIME_POLL_MINUTES).trim();
+  const minuta = env === '' ? 30 : parseInt(env, 10);
+  if (!Number.isFinite(minuta) || minuta <= 0) return;
+  const ekzekuto = async () => {
+    try { await lexoShowHN(); }
+    catch (e) { if (e.kodi !== 'DUKE_PUNUAR') console.error('lancime:', e.message); }
+  };
+  setTimeout(ekzekuto, 45 * 1000).unref();
+  setInterval(ekzekuto, Math.max(5, minuta) * 60 * 1000).unref();
+}
+
 app.get('/', (req, res) => {
   res.type('html').send(`<!DOCTYPE html>
 <html lang="sq"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -899,6 +1156,7 @@ app.get('/', (req, res) => {
     <div class="tab" id="tabShkarko" onclick="ndryshoTab('shkarko')">Shkarko</div>
     <div class="tab" id="tabBisedat" onclick="ndryshoTab('bisedat')">Bisedat</div>
     <div class="tab" id="tabKompani" onclick="ndryshoTab('kompani')">Kompani te reja</div>
+    <div class="tab" id="tabLancime" onclick="ndryshoTab('lancime')">Lancime</div>
     <div class="tab" id="tabAlerte" onclick="ndryshoTab('alerte')">Alerte</div>
   </div>
 
@@ -1014,6 +1272,17 @@ app.get('/', (req, res) => {
     <div id="kompRez"></div>
   </div>
 
+  <div class="sec-panel" id="panelLancime">
+    <p class="mut">Produkte te reja nga Show HN (pjesa e Hacker News ku njerezit tregojne cfare sapo kane ndertuar). Shtyp butonin: lexon postimet e reja, heq ato qe nuk jane faqe produkti (GitHub, rrjete sociale, blogje...) dhe kerkon email-in qe eshte SHKRUAR ne faqen e secilit produkt; asnje email nuk hamendesohet. Mund te marre disa minuta. Aplikacioni i lexon postimet e reja edhe vete rreth cdo 30 minuta.</p>
+    <div class="row">
+      <button onclick="lancimeMerr(this)">Merr te rejat dhe emailet</button>
+    </div>
+    <div id="lancimeStat" style="font-size:13px; color:#8b949e; margin-bottom:12px;"></div>
+    <div id="lancimeInfo" style="font-size:13px; color:#8b949e; margin-bottom:8px;"></div>
+    <div id="lancimeTest"></div>
+    <div id="lancimeRez"></div>
+  </div>
+
   <div class="sec-panel" id="panelAlerte">
     <p class="mut">Njoftimet e Google Alerts (te dorezuara si RSS) shfaqen ketu. Aplikacioni i lexon vete rreth cdo ore; mund ta shtysh me butonin. Ruhen vetem lidhja, titulli, copa e tekstit dhe data. Hape lidhjen dhe lexo postimin vete; dhe shenoje qe te dihet ku je.</p>
     <div class="row">
@@ -1043,6 +1312,7 @@ function ndryshoTab(cila){
   document.getElementById('tabShkarko').className = cila === 'shkarko' ? 'tab aktiv' : 'tab';
   document.getElementById('tabBisedat').className = cila === 'bisedat' ? 'tab aktiv' : 'tab';
   document.getElementById('tabKompani').className = cila === 'kompani' ? 'tab aktiv' : 'tab';
+  document.getElementById('tabLancime').className = cila === 'lancime' ? 'tab aktiv' : 'tab';
   document.getElementById('tabAlerte').className = cila === 'alerte' ? 'tab aktiv' : 'tab';
   document.getElementById('panelGjenerim').className = cila === 'gjenerim' ? 'sec-panel aktiv' : 'sec-panel';
   document.getElementById('panelRuajtura').className = cila === 'ruajtura' ? 'sec-panel aktiv' : 'sec-panel';
@@ -1050,6 +1320,8 @@ function ndryshoTab(cila){
   document.getElementById('panelBisedat').className = cila === 'bisedat' ? 'sec-panel aktiv' : 'sec-panel';
   document.getElementById('panelKompani').className = cila === 'kompani' ? 'sec-panel aktiv' : 'sec-panel';
   if(cila === 'kompani'){ kompVleresim(); }
+  document.getElementById('panelLancime').className = cila === 'lancime' ? 'sec-panel aktiv' : 'sec-panel';
+  if(cila === 'lancime'){ lancimeNgarko(); }
   document.getElementById('panelAlerte').className = cila === 'alerte' ? 'sec-panel aktiv' : 'sec-panel';
   if(cila === 'alerte'){ alerteNgarko(); }
   if(cila === 'ruajtura'){ ngarkoKategorite('filterKategoria'); shikoTeGjitha(); }
@@ -1375,6 +1647,183 @@ function kompShfaq(d){
     pre.textContent = JSON.stringify(p[1], null, 2);
     det.appendChild(sum); det.appendChild(pre); rez.appendChild(det);
   });
+}
+var LANCIME_ARSYET = {
+  pa_link: 'postime pa lidhje (vetem tekst, p.sh. pyetje ose diskutim)',
+  link_i_pavlefshem: 'lidhje e pavlefshme',
+  pa_domain: 'pa domain te perdorshem (adrese IP, localhost, faqja e vete e platformes)',
+  kod: 'kod dhe paketa (GitHub, GitLab, npm, Hugging Face...)',
+  rrjete_blogje: 'rrjete sociale, video dhe blogje (X, YouTube, Medium, Substack...)',
+  platforma: 'dyqane aplikacionesh dhe platforma (Apple, Google, itch.io...)',
+  dokumente: 'dokumente, studime dhe skedare (Wikipedia, arXiv, Notion, Figma...)',
+  lajme: 'faqe lajmesh dhe katalogje (Crunchbase, G2, Forbes...)'
+};
+var lancimeSeq = 0, lancimeBusy = false;
+// Ngarkon listen. tace = true: nuk e prek rreshtin e gjendjes (perdoret nga lancimeMerr, qe e menaxhon vete).
+async function lancimeNgarko(tace){
+  var nr = ++lancimeSeq;
+  var stat = document.getElementById('lancimeStat');
+  var shfaq = !tace && !lancimeBusy;
+  if(shfaq){ stat.textContent = 'Po ngarkoj...'; }
+  try{
+    var r = await fetch('/api/lancime?limit=500');
+    var d = await r.json();
+    if(nr !== lancimeSeq){ return null; }
+    if(d.error){ if(!tace){ stat.textContent = 'Gabim: ' + d.error; } return null; }
+    if(shfaq){ stat.textContent = ''; }
+    lancimeShfaq(d);
+    return d;
+  }catch(e){ if(nr === lancimeSeq && !tace){ stat.textContent = 'Gabim rrjeti: ' + e.message; } return null; }
+}
+function lancimeEmailCel(td, k){
+  td.innerHTML = '';
+  if(k.email){
+    var s = document.createElement('span'); s.textContent = k.email; s.style.cssText = 'font-weight:600;'; td.appendChild(s);
+    var m = document.createElement('div'); m.style.cssText = 'font-size:11px; color:#8b949e;';
+    m.textContent = (k.email_lloji === 'role' ? 'adrese roli' : 'person') + (k.email_mx === false ? ' | MX: jo' : (k.email_mx ? ' | MX ok' : ''));
+    td.appendChild(m);
+    if(k.email_burimi && (k.email_burimi.indexOf('http://') === 0 || k.email_burimi.indexOf('https://') === 0)){
+      var a = document.createElement('a'); a.textContent = 'burimi'; a.href = k.email_burimi; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.style.cssText = 'font-size:11px;';
+      td.appendChild(a);
+    }
+    return;
+  }
+  var tekst = k.po_kerkoj ? 'po kerkoj...' : (k.email_gjendja === 'pa-email' ? 'pa email ne faqe' : (k.email_gjendja === 'gabim' ? 'faqja nuk u hap' : 'ende pa kerkuar'));
+  var t = document.createElement('span'); t.textContent = tekst; t.style.cssText = 'font-size:12px; color:#8b949e;'; td.appendChild(t);
+}
+// Kerkon email-in e nje produkti. Kur serveri eshte i zene (429) provon serish pas 3 sekondash, maks. 4 here.
+async function lancimeGjejEmail(id){
+  var tr = document.querySelector('#lancimeRez tr[data-id="' + id + '"]');
+  var td = tr ? tr.querySelector('td.lancimeEmail') : null;
+  if(td){ lancimeEmailCel(td, { po_kerkoj: true }); }
+  var d = null;
+  for(var provo = 0; provo < 4; provo++){
+    try{
+      var r = await fetch('/api/lancime/email', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id: id }) });
+      if(r.status === 429){ await new Promise(function(f){ setTimeout(f, 3000); }); continue; }
+      d = await r.json(); break;
+    }catch(e){ d = { error: e.message }; break; }
+  }
+  if(!d){ d = { error: 'serveri eshte i zene, provo serish' }; }
+  if(td){
+    if(d.error){
+      td.innerHTML = '';
+      var er = document.createElement('span'); er.textContent = 'gabim: ' + d.error; er.style.cssText = 'font-size:12px; color:#f85149;'; td.appendChild(er);
+    } else { lancimeEmailCel(td, { email: d.email, email_lloji: d.email_lloji, email_mx: d.email_mx, email_burimi: d.email_burimi, email_gjendja: d.email_gjendja }); }
+  }
+  return d;
+}
+// Butoni i vetem: 1) lexon Show HN, 2) ngarkon listen, 3) kerkon email per produktet e dukshme qe s'kane email te kerkuar (maks. 50, 3 njekohesisht).
+async function lancimeMerr(btn){
+  var stat = document.getElementById('lancimeStat');
+  btn.disabled = true; lancimeBusy = true;
+  stat.textContent = 'Po lexoj Show HN nga Algolia (mund te marre disa sekonda)...';
+  try{
+    var r = await fetch('/api/lancime/rifresko', { method:'POST', headers:{'Content-Type':'application/json'}, body: '{}' });
+    var d = await r.json();
+    var lista = await lancimeNgarko(true);
+    if(d.error){ stat.textContent = 'Gabim ne leximin e Show HN: ' + d.error; }
+    else {
+      var g = d.gjendja || {};
+      var pjesa1 = 'U lexuan ' + g.ngarkuar + ' postime, ' + g.te_reja + ' produkte te reja. ';
+      var ids = (lista && lista.per_email) || [];
+      if(!ids.length){ stat.textContent = pjesa1 + 'Asnje faqe e dukshme pa email te kerkuar.'; }
+      else {
+        var gjetur = 0, bere = 0, i = 0;
+        stat.textContent = pjesa1 + 'Po kerkoj email 0/' + ids.length + '...';
+        var puntor = async function(){
+          while(i < ids.length){
+            var id = ids[i++];
+            var x = await lancimeGjejEmail(id);
+            bere++; if(x && x.email){ gjetur++; }
+            stat.textContent = pjesa1 + 'Po kerkoj email ' + bere + '/' + ids.length + ' (u gjeten ' + gjetur + ')...';
+          }
+        };
+        await Promise.all([puntor(), puntor(), puntor()]);
+        var pas = await lancimeNgarko(true);
+        var mbetur = pas && pas.totali ? pas.totali.pa_kerkuar : 0;
+        stat.textContent = pjesa1 + 'Email te gjetur: ' + gjetur + ' nga ' + ids.length + ' faqe te lexuara.' + (mbetur ? (' Ende ' + mbetur + ' pa kerkuar: shtyp serish.') : '');
+      }
+    }
+  }catch(e){ stat.textContent = 'Gabim rrjeti: ' + e.message; }
+  lancimeBusy = false; btn.disabled = false;
+}
+// Kutia e testit te burimit (e mbyllur): nje rresht permbledhje, dhe me klik detajet e leximit te fundit.
+function lancimeShfaqTestin(g){
+  var kuti = document.getElementById('lancimeTest'); kuti.innerHTML = '';
+  if(!g || !g.fundit){ return; }
+  var arsyet = g.arsyet || {}, hequr = 0;
+  Object.keys(arsyet).forEach(function(k){ hequr += arsyet[k]; });
+  var domaine = (g.vetjak || 0) + (g.nendomain || 0);
+  var det = document.createElement('details'); det.style.cssText = 'margin-bottom:12px;';
+  var sum = document.createElement('summary'); sum.style.cssText = 'cursor:pointer; font-size:13px; color:#8b949e;';
+  var kur = g.fundit.slice(0, 16).replace('T', ' ') + ' UTC';
+  sum.textContent = g.gabim ? ('Testi i burimit: leximi i ' + kur + ' deshtoi (hape per detaje)') :
+    ('Testi i burimit (leximi i ' + kur + '): ' + (g.ngarkuar || 0) + ' postime, ' + hequr + ' hequr si zhurme, ' + domaine + ' domain unike, ' + (g.te_reja || 0) + ' te reja');
+  if(g.gabim){ sum.style.color = '#f85149'; }
+  det.appendChild(sum);
+  var box = document.createElement('div');
+  box.style.cssText = 'border:1px solid #2a313c; border-radius:8px; padding:10px 12px; margin-top:6px; font-size:13px; color:#c9d1d9;';
+  function rresht(tekst, ngjyra, hapesire){
+    var dv = document.createElement('div'); dv.textContent = tekst;
+    if(ngjyra){ dv.style.color = ngjyra; }
+    if(hapesire){ dv.style.marginLeft = '14px'; dv.style.fontSize = '12px'; dv.style.color = '#8b949e'; }
+    box.appendChild(dv);
+  }
+  rresht(g.zile ? ('Dritarja: ' + g.zile + ' dite mbrapa') : 'Dritarja: vetem postimet pas leximit te meparshem');
+  rresht('Postime Show HN te lexuara: ' + (g.ngarkuar || 0) + ' (' + (g.faqe || 0) + ' thirrje te API, ' + (g.ms || 0) + ' ms)');
+  rresht('Hequr si zhurme (nuk jane faqe produkti): ' + hequr);
+  Object.keys(arsyet).sort(function(a, b){ return arsyet[b] - arsyet[a]; }).forEach(function(k){
+    rresht(arsyet[k] + ' - ' + (LANCIME_ARSYET[k] || k), null, true);
+  });
+  rresht('Domain unike produktesh: ' + domaine + ' (' + (g.vetjak || 0) + ' me domain te vet, ' + (g.nendomain || 0) + ' nendomain falas)');
+  rresht('Dublikat brenda ketij leximi (i njejti domain, disa postime): ' + (g.dublikat_brenda || 0));
+  rresht('TE REJA te ruajtura: ' + (g.te_reja || 0) + ' | ekzistonin tashme ne kete tabel: ' + (g.ekzistonin || 0), '#3fb950');
+  if(!g.te_reja && !g.gabim){ rresht('Asnje produkt i ri qe nga leximi i meparshem.', '#8b949e'); }
+  if(g.kufizuar){ rresht('Kujdes: dritarja ishte shume e madhe dhe u mor vetem pjesa me e re.', '#d29922'); }
+  if(g.gabim){ rresht('Gabim ne leximin e fundit: ' + g.gabim, '#f85149'); }
+  det.appendChild(box);
+  kuti.appendChild(det);
+}
+function lancimeShfaq(d){
+  var rez = document.getElementById('lancimeRez'); rez.innerHTML = '';
+  var t = d.totali || {};
+  document.getElementById('lancimeInfo').textContent = 'Produkte te ruajtura: ' + (t.dukshme || 0) + ' | me email: ' + (t.me_email || 0) + ' | pa kerkuar ende: ' + (t.pa_kerkuar || 0) +
+    ' | te fshehura: ' + (t.nendomain || 0) + ' nendomain falas (vercel.app, github.io...) dhe ' + (t.te_njohura || 0) + ' qe i ke tashme nga Exa/Crustdata';
+  lancimeShfaqTestin(d.gjendja);
+  if(d.duke_lexuar){
+    var dl = document.createElement('div'); dl.style.cssText = 'font-size:13px; color:#d29922; margin-bottom:8px;';
+    dl.textContent = 'Po lexohet tani ne sfond. Rifresko listen pas pak.';
+    rez.appendChild(dl);
+  }
+  var rows = d.rows || [];
+  if(!rows.length){
+    var bosh = document.createElement('div'); bosh.style.cssText = 'font-size:13px; color:#8b949e;';
+    bosh.textContent = t.gjithsej ? 'Asnje produkt i dukshem. Ato qe ekzistojne jane fshehur (nendomain falas ose qe i ke tashme).' : 'Asnje produkt i ruajtur ende. Shtyp Merr te rejat dhe emailet.';
+    rez.appendChild(bosh); return;
+  }
+  var tbl = document.createElement('table');
+  var thead = document.createElement('thead'), hr = document.createElement('tr');
+  ['Emri', 'Domain', 'Email', 'Pershkrim (nga titulli)', 'Show HN', 'Data'].forEach(function(x){ var th = document.createElement('th'); th.textContent = x; hr.appendChild(th); });
+  thead.appendChild(hr); tbl.appendChild(thead);
+  var tbody = document.createElement('tbody');
+  rows.forEach(function(k){
+    var tr = document.createElement('tr'); tr.setAttribute('data-id', String(k.id));
+    var tdE = document.createElement('td'); tdE.textContent = k.emri || ''; tdE.style.cssText = 'font-weight:600;'; tr.appendChild(tdE);
+    var tdD = document.createElement('td');
+    if(k.url && (k.url.indexOf('http://') === 0 || k.url.indexOf('https://') === 0)){
+      var a = document.createElement('a'); a.textContent = k.domain; a.href = k.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; tdD.appendChild(a);
+    } else { tdD.textContent = k.domain; }
+    if(k.domain_vetjak === false){ var b1 = document.createElement('span'); b1.className = 'badge'; b1.style.marginLeft = '6px'; b1.textContent = 'nendomain falas'; tdD.appendChild(b1); }
+    if(k.e_njohur){ var b2 = document.createElement('span'); b2.className = 'badge'; b2.style.marginLeft = '6px'; b2.textContent = 'e ke tashme'; tdD.appendChild(b2); }
+    tr.appendChild(tdD);
+    var tdM = document.createElement('td'); tdM.className = 'lancimeEmail'; lancimeEmailCel(tdM, k); tr.appendChild(tdM);
+    var tdP = document.createElement('td'); tdP.textContent = (k.pershkrimi || k.titulli || '').slice(0, 220); tdP.style.cssText = 'word-break:break-word;'; tr.appendChild(tdP);
+    kompCel(tr, (k.piket != null ? k.piket : 0) + ' pike, ' + (k.komente != null ? k.komente : 0) + ' komente', k.postimi_url);
+    var tdT = document.createElement('td'); tdT.textContent = String(k.publikuar || k.gjetur_at || '').slice(0, 16).replace('T', ' '); tdT.style.cssText = 'white-space:nowrap;'; tr.appendChild(tdT);
+    tbody.appendChild(tr);
+  });
+  tbl.appendChild(tbody); rez.appendChild(tbl);
 }
 async function alerteNgarko(){
   var stat = document.getElementById('alerteStat');
@@ -2111,5 +2560,63 @@ app.post('/api/alerte/statusi', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ---- LANCIME ----
+// Lista: nga paracaktimi fshihen nendomain-et falas (foo.vercel.app) dhe domain-et qe i ke tashme te Exa/Crustdata (nendomain=1 / njohura=1 i tregon).
+// "per_email" = id-te e produkteve te dukshme qe s'u kane kerkuar ende email-in (me te rejat e para, maks. LANCIME_EMAIL_MAKS).
+app.get('/api/lancime', async (req, res) => {
+  try {
+    const q = req.query || {};
+    const meNendomain = q.nendomain === '1', meTeNjohura = q.njohura === '1';
+    const limit = Math.min(500, Math.max(1, parseInt(q.limit, 10) || 200));
+    // "E njohur" = domain-i ekziston tashme te Exa (bizneset_gjetur) ose Crustdata (kompani_pare); ruhet, por fshihet nga lista si paracaktim.
+    const njohur = '(EXISTS (SELECT 1 FROM bizneset_gjetur b WHERE b.domain = l.domain) OR EXISTS (SELECT 1 FROM kompani_pare k WHERE k.domain = l.domain))';
+    const dukshmeria = [];
+    if (!meNendomain) dukshmeria.push('l.domain_vetjak IS NOT FALSE');
+    if (!meTeNjohura) dukshmeria.push('NOT ' + njohur);
+    const dukshme = dukshmeria.length ? dukshmeria.join(' AND ') : 'TRUE';
+    const paKerkuar = "COALESCE(l.email_gjendja, 'pa-kerkuar') = 'pa-kerkuar'";
+    const rendit = ' ORDER BY l.publikuar DESC NULLS LAST, l.id DESC';
+    const rows = (await pool.query("SELECT l.id, l.domain, l.domain_vetjak, l.url, l.emri, l.pershkrimi, l.titulli, l.postimi_url, l.autori, l.piket, l.komente, l.publikuar, l.gjetur_at, l.email, l.email_lloji, l.email_mx, l.email_burimi, COALESCE(l.email_gjendja, 'pa-kerkuar') AS email_gjendja, " + njohur + ' AS e_njohur FROM lancime_reja l WHERE ' + dukshme + rendit + ' LIMIT $1', [limit])).rows;
+    const perEmail = (await pool.query('SELECT l.id FROM lancime_reja l WHERE ' + dukshme + ' AND ' + paKerkuar + rendit + ' LIMIT ' + LANCIME_EMAIL_MAKS)).rows.map(r => r.id);
+    const totali = (await pool.query('SELECT COUNT(*)::int AS gjithsej, COUNT(*) FILTER (WHERE l.domain_vetjak IS FALSE)::int AS nendomain, COUNT(*) FILTER (WHERE ' + njohur + ')::int AS te_njohura, ' +
+      'COUNT(*) FILTER (WHERE ' + dukshme + ')::int AS dukshme, COUNT(*) FILTER (WHERE (' + dukshme + ') AND l.email IS NOT NULL)::int AS me_email, ' +
+      'COUNT(*) FILTER (WHERE (' + dukshme + ') AND ' + paKerkuar + ')::int AS pa_kerkuar FROM lancime_reja l')).rows[0] || {};
+    res.json({ ok: true, rows, per_email: perEmail, totali, gjendja: lancimeGjendja, duke_lexuar: lancimeDuke });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+// Leximi i Show HN. Trupi opsional { zile: 1..14 } e terheq dritaren prapa ate dite (per testim); pa te, merr vetem te rejat pas kursorit.
+app.post('/api/lancime/rifresko', async (req, res) => {
+  const b = req.body || {};
+  let zile = null;
+  if (b.zile !== undefined && b.zile !== null && !(typeof b.zile === 'string' && b.zile.trim() === '')) {
+    zile = (typeof b.zile === 'number' || typeof b.zile === 'string') ? Number(b.zile.toString().trim()) : NaN;
+    if (!Number.isInteger(zile) || zile < 1 || zile > 14) return res.status(400).json({ error: 'Dite mbrapa: nje numer i plote nga 1 deri 14 (ose lere bosh per te rejat).' });
+  }
+  try { res.json({ ok: true, gjendja: await lexoShowHN(zile ? { zile } : null) }); }
+  catch (e) { res.status(e.kodi === 'DUKE_PUNUAR' ? 409 : 500).json({ error: e.message }); }
+});
+// Gjen email-in e SHKRUAR ne faqen e nje produkti te ruajtur (domain-i merret nga databaza sipas id-se, jo nga trupi i kerkeses).
+// Perdor te njejten gjetje (me mbrojtje SSRF) dhe te njejtin kufi prej 3 njekohesisht si te "Kompani te reja".
+app.post('/api/lancime/email', async (req, res) => {
+  const b = req.body || {};
+  const id = Number(b.id);
+  if (!Number.isInteger(id) || id < 1 || id > 2147483647) return res.status(400).json({ error: 'Id i pavlefshem.' });
+  if (emailNeVazhdim >= 3) return res.status(429).json({ error: 'Po kerkohen tashme 3 faqe njekohesisht. Prit pak dhe provo serish.' });
+  emailNeVazhdim++;
+  try {
+    const ekz = await pool.query('SELECT domain, email, email_lloji, email_mx, email_burimi FROM lancime_reja WHERE id = $1', [id]);
+    if (!ekz.rows.length) return res.status(404).json({ error: 'Produkti nuk u gjet.' });
+    const e0 = ekz.rows[0], domain = e0.domain;
+    if (e0.email && !b.rigjej) {
+      return res.json({ ok: true, nga_kujtesa: true, id, domain, email: e0.email, email_lloji: e0.email_lloji || null, email_mx: e0.email_mx == null ? null : e0.email_mx, email_burimi: e0.email_burimi || null, email_gjendja: 'u-gjet', mesazh: 'E ruajtur me pare' });
+    }
+    const g = await gjejEmailPerKompani(domain);
+    await pool.query('UPDATE lancime_reja SET email = $2, email_lloji = $3, email_mx = $4, email_burimi = $5, email_gjendja = $6, email_at = now() WHERE id = $1',
+      [id, g.email || null, g.lloji || null, g.mx == null ? null : g.mx, g.burimi || null, g.gjendja]);
+    res.json({ ok: true, id, domain, email: g.email || null, email_lloji: g.lloji || null, email_mx: g.mx == null ? null : g.mx, email_burimi: g.burimi || null, email_gjendja: g.gjendja, mesazh: g.mesazh || '' });
+  } catch (e) { res.status(500).json({ error: String(e.message).replace(/https?:\/\/\S+/g, '[adrese]') }); }
+  finally { emailNeVazhdim--; }
+});
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => { console.log('Zbulim Bizneseh po punon ne portin ' + PORT); nisAlertePoll(); });
+app.listen(PORT, () => { console.log('Zbulim Bizneseh po punon ne portin ' + PORT); nisAlertePoll(); nisLancimePoll(); });
