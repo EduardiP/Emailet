@@ -90,8 +90,13 @@ pool.query(`CREATE TABLE IF NOT EXISTS lancime_reja (
   email_mx BOOLEAN,
   email_burimi TEXT,
   email_gjendja TEXT DEFAULT 'pa-kerkuar',
-  email_at TIMESTAMPTZ
+  email_at TIMESTAMPTZ,
+  kategoria TEXT,
+  marre_at TIMESTAMPTZ
 )`)
+  // kategoria = kategoria e caktuar nga AI nga titulli; marre_at = kur u dha produkti per here te pare te "Kerko domain-e" (NULL = ende i pamarre).
+  // Tabela e krijuar para ketij ndryshimi nuk i ka dy kolonat: shtohen ketu.
+  .then(() => pool.query(`ALTER TABLE lancime_reja ADD COLUMN IF NOT EXISTS kategoria TEXT, ADD COLUMN IF NOT EXISTS marre_at TIMESTAMPTZ`))
   .then(() => pool.query(`CREATE INDEX IF NOT EXISTS lancime_reja_publikuar_idx ON lancime_reja (publikuar DESC)`))
   .catch(e => console.error('migrim lancime_reja:', e.message));
 // Kursori i leximit (koha e postimit me te ri qe e kemi perpunuar): pas rinisjes leximi vazhdon nga aty ku mbeti.
