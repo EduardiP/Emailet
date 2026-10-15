@@ -1,5 +1,5 @@
 // Mjet zbulimi bizneseh — Exa API (zbulim) + OpenAI (filtrim AI) + Generect (email) + PostgreSQL.
-// Variabla mjedisi te kerkuara ne Railway: EXA_API_KEY, OPENAI_API_KEY, GENERECT_API_KEY, DATABASE_URL, SERPER_API_KEY (per tab-in Bisedat), CRUSTDATA_API_KEY (per tab-in Kompani te reja), GOOGLE_ALERTS_FEEDS (per tab-in Alerte). Opsionale per tab-in Lancime: LANCIME_POLL_MINUTES (paracaktim 30; 0 = vetem me butonin), LANCIME_ZILE (leximi i pare, sa dite mbrapa, paracaktim 7).
+// Variabla mjedisi te kerkuara ne Railway: EXA_API_KEY, OPENAI_API_KEY, GENERECT_API_KEY, DATABASE_URL, SERPER_API_KEY (per tab-in Bisedat), CRUSTDATA_API_KEY (per tab-in Kompani te reja), GOOGLE_ALERTS_FEEDS (per tab-in Alerte). Opsionale per tab-in Lancime: LANCIME_POLL_MINUTES (paracaktim 30; 0 = vetem me butonin), LANCIME_ZILE (leximi i pare, sa dite mbrapa, paracaktim 7). Tab-i Njoftimet (Bluesky) nuk kerkon asnje variabel; opsionale: NJOFTIME_BSKY_KUFI_DITOR (paracaktim 2000 postime ne dite), NJOFTIME_RUAJ_DITE (paracaktim 30 dite), NJOFTIME_BSKY_URL (adrese tjeter Jetstream).
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -106,6 +106,45 @@ pool.query(`CREATE TABLE IF NOT EXISTS lancime_gjendja (
   vlera TEXT,
   perditesuar TIMESTAMPTZ DEFAULT now()
 )`).catch(e => console.error('migrim lancime_gjendja:', e.message));
+
+// ===== NJOFTIMET: postime nga rrjetet qe perputhen me rregulla (Bluesky Jetstream + X filtered stream) =====
+// njoftime_rregulla = rregullat e perdoruesit (sintakse si ne X). njoftime_postime = postimet qe perputhen (nje rresht per postim, burimi + ext_id UNIQUE).
+// njoftime_gjendja = celesa/vlera (a eshte burimi i ndezur, kursori i Bluesky, numruesit ditore, profili i AI).
+const njGati = pool.query(`CREATE TABLE IF NOT EXISTS njoftime_rregulla (
+  id SERIAL PRIMARY KEY,
+  emri TEXT NOT NULL,
+  kategoria TEXT,
+  rregulla TEXT NOT NULL,
+  aktive BOOLEAN DEFAULT true,
+  x_id TEXT,
+  x_gabim TEXT,
+  krijuar_at TIMESTAMPTZ DEFAULT now()
+)`)
+  .then(() => pool.query(`CREATE TABLE IF NOT EXISTS njoftime_postime (
+  id SERIAL PRIMARY KEY,
+  burimi TEXT NOT NULL,
+  ext_id TEXT NOT NULL,
+  url TEXT,
+  autori TEXT,
+  teksti TEXT,
+  publikuar TIMESTAMPTZ,
+  gjetur_at TIMESTAMPTZ DEFAULT now(),
+  rregulla_id INTEGER,
+  rregullat INTEGER[] DEFAULT '{}',
+  statusi TEXT DEFAULT 'i ri',
+  ai_lloji INTEGER,
+  ai_pike INTEGER,
+  ai_at TIMESTAMPTZ,
+  UNIQUE (burimi, ext_id)
+)`))
+  .then(() => pool.query(`CREATE INDEX IF NOT EXISTS njoftime_postime_gjetur_idx ON njoftime_postime (gjetur_at DESC)`))
+  .then(() => pool.query(`CREATE TABLE IF NOT EXISTS njoftime_gjendja (
+  celesi TEXT PRIMARY KEY,
+  vlera TEXT,
+  perditesuar TIMESTAMPTZ DEFAULT now()
+)`))
+  .then(() => true)
+  .catch(e => { console.error('migrim njoftime:', e.message); return false; });
 
 function domainNga(url) {
   try {
@@ -1172,6 +1211,515 @@ function nisLancimePoll() {
   setInterval(ekzekuto, Math.max(5, minuta) * 60 * 1000).unref();
 }
 
+// ---- Motori i rregullave ----
+// Sintaksa si te X: fjale, "fraza", OR (me shkronja te medha), kllapa, minus perpara (-fjale, -"fraze", -(...)), hapesira = DHE.
+// Operatore te vleresuara vendas (Bluesky): lang:xx, is:retweet, is:reply, is:quote, has:links. Te tjerat kalojne si "te pavendosura" (nuk e prishin rregullen).
+// I njejti tekst i rregulles dergohet te X (qe e vleresion vete) dhe vleresohet vendas per postimet e Bluesky.
+
+// Tekst -> forme e krahasueshme: shkronja te vogla, pa apostrofa, cdo shenje tjeter bhet hapesire; ruhet me nje hapesire ne fillim e ne fund.
+function njNormalizo(s) {
+  return ' ' + String(s || '').toLowerCase()
+    .replace(/['\u2018\u2019`]/g, '')
+    .replace(/[^\p{L}\p{N}_]+/gu, ' ')
+    .trim() + ' ';
+}
+
+function njTokenet(t) {
+  const out = [];
+  const n = t.length;
+  let i = 0;
+  while (i < n) {
+    const c = t[i];
+    if (c === ' ' || c === '\t' || c === '\n' || c === '\r') { i++; continue; }
+    if (c === '(') { out.push({ k: '(' }); i++; continue; }
+    if (c === ')') { out.push({ k: ')' }); i++; continue; }
+    if (c === '-' && i + 1 < n && t[i + 1] !== ' ') { out.push({ k: '-' }); i++; continue; }
+    if (c === '"') {
+      const j = t.indexOf('"', i + 1);
+      if (j < 0) throw new Error('Thonjeza e hapur nuk eshte mbyllur.');
+      out.push({ k: 'p', v: t.slice(i + 1, j) });
+      i = j + 1; continue;
+    }
+    let j = i;
+    while (j < n && ' \t\n\r()"'.indexOf(t[j]) < 0) j++;
+    const w = t.slice(i, j);
+    if (w === 'OR') { out.push({ k: 'OR' }); i = j; continue; }
+    const om = /^([A-Za-z_]+):(.*)$/.exec(w);
+    if (om && om[2]) { out.push({ k: 'op', n: om[1].toLowerCase(), v: om[2] }); i = j; continue; }
+    if (om && t[j] === '"') {
+      const j2 = t.indexOf('"', j + 1);
+      if (j2 < 0) throw new Error('Thonjeza e hapur nuk eshte mbyllur.');
+      out.push({ k: 'op', n: om[1].toLowerCase(), v: t.slice(j + 1, j2) });
+      i = j2 + 1; continue;
+    }
+    if (om) throw new Error('Operatori "' + om[1] + ':" nuk ka vlere.');
+    out.push({ k: 'w', v: w });
+    i = j;
+  }
+  return out;
+}
+
+// Tekst rregulle -> peme (AST). Hedh Error me mesazh te kuptueshem kur sintaksa nuk eshte e sakte.
+function njParso(tekst) {
+  const tok = njTokenet(String(tekst));
+  if (tok.length > 400) throw new Error('Rregulla ka shume pjese.');
+  let p = 0;
+  function njesia(thellesia) {
+    const x = tok[p++];
+    if (!x) throw new Error('Rregulla perfundon papritur (minus ose OR pa asgje pas).');
+    if (x.k === '-') return { t: 'not', x: njesia(thellesia) };
+    if (x.k === '(') {
+      if (thellesia >= 8) throw new Error('Shume kllapa brenda kllapave.');
+      const brenda = ose(thellesia + 1);
+      if (!tok[p] || tok[p].k !== ')') throw new Error('Kllapa e hapur nuk eshte mbyllur.');
+      p++;
+      return brenda;
+    }
+    if (x.k === 'p' || x.k === 'w') {
+      const v = njNormalizo(x.v).trim();
+      if (!v) throw new Error('Ka nje fjale ose fraze pa asnje shkronje ose numer.');
+      return { t: x.k, v: ' ' + v + ' ' };
+    }
+    if (x.k === 'op') return { t: 'op', n: x.n, v: x.v };
+    throw new Error('Pjese e papritur ne rregull (' + x.k + ').');
+  }
+  function dhe(thellesia) {
+    const pjeset = [];
+    for (;;) {
+      const x = tok[p];
+      if (!x || x.k === 'OR' || x.k === ')') break;
+      pjeset.push(njesia(thellesia));
+    }
+    if (!pjeset.length) throw new Error('Pjese e zbrazet (OR ose kllapa pa asgje brenda).');
+    return pjeset.length === 1 ? pjeset[0] : { t: 'and', a: pjeset };
+  }
+  function ose(thellesia) {
+    const deget = [dhe(thellesia)];
+    while (tok[p] && tok[p].k === 'OR') { p++; deget.push(dhe(thellesia)); }
+    return deget.length === 1 ? deget[0] : { t: 'or', a: deget };
+  }
+  const ast = ose(0);
+  if (p < tok.length) throw new Error('Kllapa ")" e tepert ose pjese e pakuptueshme.');
+  return ast;
+}
+
+// Cdo dege OR duhet te kete te pakten nje fjale ose fraze pozitive (X nuk lejon rregulla vetem me minus ose vetem me operatore).
+function njKaPozitive(n) {
+  if (n.t === 'w' || n.t === 'p') return true;
+  if (n.t === 'and') return n.a.some(njKaPozitive);
+  if (n.t === 'or') return n.a.every(njKaPozitive);
+  return false;
+}
+
+// Operatoret qe nuk vleresohen vendas (kalojne si te pavendosura).
+function njParalajmerime(n, dalja) {
+  dalja = dalja || [];
+  if (n.t === 'op') {
+    const v = String(n.v || '').toLowerCase();
+    const ok = n.n === 'lang' || (n.n === 'is' && (v === 'retweet' || v === 'reply' || v === 'quote')) || (n.n === 'has' && v === 'links');
+    const tekst = n.n + ':' + n.v;
+    if (!ok && !dalja.includes(tekst)) dalja.push(tekst);
+  } else if (n.t === 'not') { njParalajmerime(n.x, dalja); }
+  else if (n.a) { n.a.forEach(x => njParalajmerime(x, dalja)); }
+  return dalja;
+}
+
+// Konteksti i nje postimi per vleresim. ekstra: { langs: [..], reply, quote, links }.
+function njKontekst(tekst, ekstra) {
+  const e = ekstra || {};
+  return { nt: njNormalizo(tekst), langs: Array.isArray(e.langs) && e.langs.length ? e.langs : null, reply: !!e.reply, quote: !!e.quote, links: !!e.links };
+}
+
+// Vleresimi me tre vlera: true / false / null (null = e pavendosur; nuk e ndryshon rezultatin e DHE/OR).
+function njVlereso(n, c) {
+  if (n.t === 'w' || n.t === 'p') return c.nt.indexOf(n.v) >= 0;
+  if (n.t === 'not') { const v = njVlereso(n.x, c); return v === null ? null : !v; }
+  if (n.t === 'and') {
+    let kaTrue = false;
+    for (const x of n.a) { const v = njVlereso(x, c); if (v === false) return false; if (v === true) kaTrue = true; }
+    return kaTrue ? true : null;
+  }
+  if (n.t === 'or') {
+    let kaFalse = false;
+    for (const x of n.a) { const v = njVlereso(x, c); if (v === true) return true; if (v === false) kaFalse = true; }
+    return kaFalse ? false : null;
+  }
+  if (n.t === 'op') {
+    const v = String(n.v || '').toLowerCase();
+    if (n.n === 'lang') {
+      if (!c.langs) return null;
+      const l = v.slice(0, 2);
+      return c.langs.some(x => String(x).toLowerCase().slice(0, 2) === l);
+    }
+    if (n.n === 'is') { if (v === 'retweet') return false; if (v === 'reply') return c.reply; if (v === 'quote') return c.quote; return null; }
+    if (n.n === 'has') { if (v === 'links') return c.links; return null; }
+    return null;
+  }
+  return null;
+}
+
+// Pastron tekstin e rregulles (thonjeza te lakuara -> te drejta, hapesira te shumta) dhe e kontrollon. Kthen { rregulla, ast, paralajmerime } ose hedh Error.
+function njPergatitRregullen(tekst) {
+  const t = String(tekst || '').replace(/[\u201C\u201D\u201E]/g, '"').replace(/[\u2018\u2019]/g, "'").replace(/\s+/g, ' ').trim();
+  if (!t) throw new Error('Rregulla eshte bosh.');
+  if (t.length > 1024) throw new Error('Rregulla eshte shume e gjate (maksimumi 1024 shenja, kufiri i X).');
+  const ast = njParso(t);
+  if (!njKaPozitive(ast)) throw new Error('Cdo pjese e rregulles (cdo dege OR) duhet te kete te pakten nje fjale ose fraze pozitive, jo vetem minus ose operatore.');
+  return { rregulla: t, ast, paralajmerime: njParalajmerime(ast) };
+}
+
+// Rregullat e ngarkuara ne memorie (te kompiluara). Rifreskohen pas cdo ndryshimi.
+let njRregullat = [];
+async function njRifreskoRregullat() {
+  const rows = (await pool.query('SELECT id, emri, kategoria, rregulla, aktive, x_id, x_gabim FROM njoftime_rregulla ORDER BY id')).rows;
+  njRregullat = rows.map(r => {
+    let ast = null, gabim = null, paralajmerime = [];
+    try { const p = njPergatitRregullen(r.rregulla); ast = p.ast; paralajmerime = p.paralajmerime; } catch (e) { gabim = e.message; }
+    return Object.assign({}, r, { ast, gabim, paralajmerime });
+  });
+  return njRregullat;
+}
+// ID-te e rregullave aktive qe e perputhin kontekstin.
+function njPerputhjet(kontekst) {
+  const ids = [];
+  for (const r of njRregullat) { if (r.aktive && r.ast && njVlereso(r.ast, kontekst) === true) ids.push(r.id); }
+  return ids;
+}
+
+// Rregullat e para: nxjerre nga phronexusai.com (rrjeti ku bizneset SaaS promovojne njeri-tjetrin) dhe nga fjalet qe perdorin zakonisht
+// themeluesit kur nuk gjejne klientet e pare, kur kane problem me marketingun/reklamat, ose kur flasin per promovim te ndersjelle.
+const NJ_SUFIKSI = ' -is:retweet lang:en';
+const NJ_RREGULLAT_FILLESTARE = [
+  { emri: 'Klientet e pare', kategoria: 'klientet-e-pare', rregulla: `("first customers" OR "first users" OR "first paying customers" OR "first 10 customers" OR "first 100 customers" OR "first 100 users") (SaaS OR startup OR founder OR bootstrapped OR MVP OR "indie hacker") (how OR struggling OR stuck OR advice OR help OR need OR "looking for") -"how I got" -"how we got"` + NJ_SUFIKSI },
+  { emri: 'Pa klient ose perdorues', kategoria: 'klientet-e-pare', rregulla: `("no customers" OR "no users" OR "zero customers" OR "zero users" OR "no paying customers" OR "no signups" OR "0 signups" OR "0 customers" OR "0 users") (SaaS OR startup OR launched OR MVP OR "side project" OR "my product")` + NJ_SUFIKSI },
+  { emri: 'Vuaj te gjej klientet', kategoria: 'klientet-e-pare', rregulla: `("struggling to get customers" OR "struggling to find customers" OR "struggling to get users" OR "cant get customers" OR "can't get customers" OR "hard to get customers" OR "hard to find customers" OR "hard to get users" OR "cant find customers") (SaaS OR startup OR founder OR product OR app)` + NJ_SUFIKSI },
+  { emri: 'Distribucioni eshte i veshtire', kategoria: 'klientet-e-pare', rregulla: `("distribution is hard" OR "distribution is the hardest" OR "distribution problem" OR "nobody knows about my" OR "no one knows about my" OR "no traffic to my") (SaaS OR startup OR founder OR product OR app OR site OR website)` + NJ_SUFIKSI },
+  { emri: 'Si te marr trafik ose perdorues', kategoria: 'klientet-e-pare', rregulla: `("get traffic to my" OR "get users to my" OR "get more users" OR "get more customers" OR "get my first users") (SaaS OR startup OR "my product" OR "my app") (how OR help OR advice OR tips OR struggling) -"how I got" -"how we got"` + NJ_SUFIKSI },
+  { emri: 'Pa buxhet marketingu', kategoria: 'marketing', rregulla: `("no marketing budget" OR "no ad budget" OR "cant afford ads" OR "can't afford ads" OR "ads are too expensive" OR "ads too expensive" OR "tiny marketing budget" OR "zero budget marketing" OR "bootstrapped marketing") (SaaS OR startup OR founder OR "my product" OR bootstrapped)` + NJ_SUFIKSI },
+  { emri: 'Si ta promovoj SaaS-in', kategoria: 'marketing', rregulla: `("how to promote my SaaS" OR "how do I promote my SaaS" OR "where to promote my SaaS" OR "how to market my SaaS" OR "how do I market my SaaS" OR "promote my startup for free" OR "free ways to promote my" OR "cheap ways to promote my" OR "free marketing for SaaS")` + NJ_SUFIKSI },
+  { emri: 'Reklamat nuk funksionojne', kategoria: 'marketing', rregulla: `("ads not working" OR "ads arent working" OR "paid ads not working" OR "burning money on ads" OR "wasting money on ads" OR "CAC is too high" OR "high customer acquisition cost" OR "ads are not converting") (SaaS OR startup OR founder OR "my product")` + NJ_SUFIKSI },
+  { emri: 'Cross-promotion', kategoria: 'promovim-ndersjelle', rregulla: `("cross promotion" OR "cross-promotion" OR "cross promote" OR "cross-promote" OR "crosspromotion" OR "cross promotions") (SaaS OR startup OR founder OR newsletter OR "my product" OR "my app" OR partners)` + NJ_SUFIKSI },
+  { emri: 'Swap promovimi', kategoria: 'promovim-ndersjelle', rregulla: `("audience swap" OR "newsletter swap" OR "newsletter swaps" OR "promo swap" OR "shoutout swap" OR "swap promotions" OR "promote each other" OR "promote each others" OR "promote eachother" OR "mutual promotion")` + NJ_SUFIKSI },
+  { emri: 'Partneritete SaaS', kategoria: 'promovim-ndersjelle', rregulla: `("looking for partners" OR "looking for partnerships" OR "open to partnerships" OR "want to partner" OR "looking for collaborators" OR "co-marketing" OR "comarketing") (SaaS OR startup OR founder) (promote OR promotion OR marketing OR distribution OR audience OR customers)` + NJ_SUFIKSI },
+  { emri: 'Shkembim banneresh ose trafiku', kategoria: 'promovim-ndersjelle', rregulla: `("banner exchange" OR "traffic exchange" OR "ad exchange" OR "link swap" OR "traffic swap") (SaaS OR startup OR founder OR indie OR newsletter)` + NJ_SUFIKSI }
+];
+// Shton rregullat e para qe ende nuk ekzistojne (krahasim me tekstin e rregulles). Kthen sa u shtuan.
+async function njShtoFillestaret() {
+  const ekz = new Set((await pool.query('SELECT rregulla FROM njoftime_rregulla')).rows.map(r => r.rregulla));
+  let shtuar = 0;
+  for (const r of NJ_RREGULLAT_FILLESTARE) {
+    if (ekz.has(r.rregulla)) continue;
+    await pool.query('INSERT INTO njoftime_rregulla (emri, kategoria, rregulla) VALUES ($1, $2, $3)', [r.emri, r.kategoria, r.rregulla]);
+    shtuar++;
+  }
+  await njRifreskoRregullat();
+  return shtuar;
+}
+
+// ---- Cilesime, gjendje, buffer ----
+// Variabla opsionale te Railway (asnje nuk eshte e detyrueshme): NJOFTIME_BSKY_KUFI_DITOR (paracaktim 2000 postime te ruajtura ne dite),
+// NJOFTIME_RUAJ_DITE (paracaktim 30 dite), NJOFTIME_BSKY_URL (adrese tjeter e Jetstream, vetem nese duhet ndryshuar paracaktimi).
+function njNumri(vlera, paracaktim, min) {
+  const n = parseInt(vlera, 10);
+  return Number.isFinite(n) && n >= min ? n : paracaktim;
+}
+const NJ_BSKY_KUFI = njNumri(process.env.NJOFTIME_BSKY_KUFI_DITOR, 2000, 1);
+const NJ_RUAJ_DITE = njNumri(process.env.NJOFTIME_RUAJ_DITE, 30, 1);
+// Dita sipas UTC (YYYY-MM-DD): numruesi ditor rivendoset ne mesnate UTC.
+function njDita() { return new Date().toISOString().slice(0, 10); }
+// Heq adresat nga mesazhet e gabimit para se te dalin ne faqe.
+function njPastroGabimin(e) {
+  const t = String((e && e.message) || e || 'gabim');
+  return t.replace(/https?:\/\/\S+/g, '[adrese]').replace(/wss?:\/\/\S+/g, '[adrese]').slice(0, 300);
+}
+
+async function njRuaj(celesi, vlera) {
+  try {
+    await pool.query('INSERT INTO njoftime_gjendja (celesi, vlera, perditesuar) VALUES ($1, $2, now()) ON CONFLICT (celesi) DO UPDATE SET vlera = EXCLUDED.vlera, perditesuar = now()',
+      [celesi, vlera === null || vlera === undefined ? null : String(vlera)]);
+  } catch (e) { console.error('njoftime ruaj ' + celesi + ':', e.message); }
+}
+async function njLexoGjendjen() {
+  const o = {};
+  (await pool.query('SELECT celesi, vlera FROM njoftime_gjendja')).rows.forEach(r => { o[r.celesi] = r.vlera; });
+  return o;
+}
+
+// Postimet qe perputhen futen ne buffer dhe shkruhen ne DB cdo 1 sekonde me nje INSERT te vetem (UNNEST); dublikatet (burimi + ext_id) anashkalohen.
+let njBuf = [];
+let njShkarkimDuke = false;
+const njStat = { ruajtur: 0, gabim_db: null, fshire: 0 };
+function njShtoNeBuffer(rresht) {
+  if (njBuf.length < 5000) njBuf.push(rresht);
+  if (njBuf.length >= 200) njShkarko();
+}
+async function njShkarko() {
+  if (njShkarkimDuke || !njBuf.length) return;
+  njShkarkimDuke = true;
+  const grupi = njBuf.splice(0, 500);
+  try {
+    const r = await pool.query(
+      `INSERT INTO njoftime_postime (burimi, ext_id, url, autori, teksti, publikuar, rregulla_id, rregullat)
+       SELECT t.b, t.e, t.u, t.a, t.x, t.p::timestamptz, NULLIF(split_part(t.r, ',', 1), '')::int,
+              CASE WHEN t.r = '' THEN '{}'::int[] ELSE string_to_array(t.r, ',')::int[] END
+       FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[]) AS t(b, e, u, a, x, p, r)
+       ON CONFLICT (burimi, ext_id) DO NOTHING`,
+      [grupi.map(x => x.burimi), grupi.map(x => x.ext_id), grupi.map(x => x.url || null), grupi.map(x => x.autori || null), grupi.map(x => String(x.teksti || '').slice(0, 1000)),
+        grupi.map(x => x.publikuar || new Date().toISOString()), grupi.map(x => (x.rregullat || []).join(','))]);
+    njStat.ruajtur += r.rowCount || 0;
+    njStat.gabim_db = null;
+  } catch (e) {
+    njStat.gabim_db = njPastroGabimin(e);
+    if (njBuf.length < 5000) njBuf = grupi.concat(njBuf);
+  }
+  njShkarkimDuke = false;
+}
+// Postimet e vjetra fshihen pas NJ_RUAJ_DITE ditesh (ato te shenuara "u pergjigj" mbeten).
+async function njPastro() {
+  try {
+    const r = await pool.query(`DELETE FROM njoftime_postime WHERE gjetur_at < now() - make_interval(days => $1::int) AND COALESCE(statusi, 'i ri') <> 'u pergjigj'`, [NJ_RUAJ_DITE]);
+    njStat.fshire += r.rowCount || 0;
+  } catch (e) { console.error('njoftime pastrim:', e.message); }
+}
+
+// ---- Bluesky Jetstream (rrjedhe e te gjitha postimeve te reja; falas, pa celes) ----
+// Jetstream nuk filtron me fjale, vetem me lloj te dhenash: postimet vijne te gjitha dhe filtrimi me rregulla behet ketu (vendas, pa kosto).
+// Ka dy versione protokolli; provohen me radhe dhe mbahet i pari qe jep mesazhe te njohura. NJOFTIME_BSKY_URL = nje ose me shume adresa (te ndara me presje) qe zevendesojne listen.
+const NJ_BSKY_PARACAKTUAR = [
+  { l: 'v2', url: 'wss://jetstream.us-east.bsky.network/xrpc/network.bsky.jetstream.subscribeEvents?collections=app.bsky.feed.post&kinds=commit' },
+  { l: 'v2', url: 'wss://jetstream.us-west.bsky.network/xrpc/network.bsky.jetstream.subscribeEvents?collections=app.bsky.feed.post&kinds=commit' },
+  { l: 'v1', url: 'wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=app.bsky.feed.post' },
+  { l: 'v1', url: 'wss://jetstream2.us-west.bsky.network/subscribe?wantedCollections=app.bsky.feed.post' }
+];
+const NJ_BSKY_NGA_ENV = String(process.env.NJOFTIME_BSKY_URL || '').split(/[\s,]+/).filter(Boolean).map(u => ({ l: /\/xrpc\//.test(u) ? 'v2' : 'v1', url: u }));
+const NJ_BSKY_ENDPOINTET = NJ_BSKY_NGA_ENV.length ? NJ_BSKY_NGA_ENV : NJ_BSKY_PARACAKTUAR;
+const njBsky = {
+  duhet: false, lidhur: false, ep: 0, ws: null, provat: 0, rilidhje: 0,
+  mesazhe: 0, postime: 0, perputhje: 0, te_panjohura: 0, mostra: [], njohur: false,
+  dita: njDita(), sot: 0, kufiri_arritur: false, fundit: 0, ritmi: 0, gabim: null, kursori: null,
+  _rilid: null, _puls: null, _nisur: 0, _tik: 0, _pikat: 0, _pikat_at: Date.now(), _ruajtur_sot: -1, _kurs_ruajtur: null, _emrat_duke: false, _emrat_gabime: 0, _emrat_provuar: new Set()
+};
+
+function njBskyMostra(t) {
+  njBsky.te_panjohura++;
+  const s = String(t).slice(0, 200);
+  if (njBsky.mostra.length < 3 && !njBsky.mostra.includes(s)) njBsky.mostra.push(s);
+}
+function njBskyKaLidhje(rec) {
+  if (rec.embed && /^app\.bsky\.embed\.external/.test(String(rec.embed.$type || ''))) return true;
+  return Array.isArray(rec.facets) && rec.facets.some(f => f && Array.isArray(f.features) && f.features.some(x => x && x.$type === 'app.bsky.richtext.facet#link'));
+}
+// Koha e postimit: createdAt (e deklaruar nga klienti) vetem nese eshte e arsyeshme; ndryshe koha e Jetstream; ndryshe tani.
+function njBskyKoha(rec, p) {
+  const tani = Date.now();
+  const d = rec.createdAt ? Date.parse(rec.createdAt) : NaN;
+  if (Number.isFinite(d) && d > tani - 3 * 86400000 && d < tani + 600000) return new Date(d).toISOString();
+  const us = Number(p.time_us);
+  if (Number.isFinite(us) && us > 0) return new Date(us / 1000).toISOString();
+  return new Date(tani).toISOString();
+}
+
+// Nje mesazh nga Jetstream (v1: {did,time_us,kind,commit:{...}}; v2: {$type,payload:{...}} me fushat te sheshta ose brenda commit).
+function njBskyMesazhi(data) {
+  njBsky.mesazhe++;
+  let tekst = data;
+  if (typeof tekst !== 'string') { try { tekst = new TextDecoder().decode(data); } catch (e) { return; } }
+  let m;
+  try { m = JSON.parse(tekst); } catch (e) { njBskyMostra(tekst); return; }
+  if (!m || typeof m !== 'object') { njBskyMostra(tekst); return; }
+  const p = (m.payload && typeof m.payload === 'object') ? m.payload : m;
+  const c = (p.commit && typeof p.commit === 'object') ? p.commit : p;
+  if (/identity|account|sync/i.test(String(p.kind || p.$type || m.$type || '')) && typeof c.collection !== 'string') { njBsky.njohur = true; return; }
+  const did = typeof p.did === 'string' ? p.did : c.did;
+  if (typeof c.collection !== 'string' || typeof did !== 'string') { njBskyMostra(tekst); return; }
+  njBsky.njohur = true; njBsky.provat = 0;
+  if (p.time_us !== undefined && p.time_us !== null) njBsky.kursori = { l: 'v1', v: String(p.time_us), t: Date.now() };
+  else if (p.seq !== undefined && p.seq !== null) njBsky.kursori = { l: 'v2', v: String(p.seq), t: Date.now() };
+  if (c.operation !== 'create' || c.collection !== 'app.bsky.feed.post') return;
+  const rec = c.record;
+  if (!rec || typeof rec.text !== 'string' || typeof c.rkey !== 'string' || !c.rkey) return;
+  njBsky.postime++;
+  const ids = njPerputhjet(njKontekst(rec.text, {
+    langs: rec.langs, reply: !!rec.reply, links: njBskyKaLidhje(rec),
+    quote: !!(rec.embed && /^app\.bsky\.embed\.record/.test(String(rec.embed.$type || '')))
+  }));
+  if (!ids.length) return;
+  njBsky.perputhje++;
+  const sot = njDita();
+  if (njBsky.dita !== sot) { njBsky.dita = sot; njBsky.sot = 0; njBsky.kufiri_arritur = false; }
+  if (njBsky.sot >= NJ_BSKY_KUFI) { njBsky.kufiri_arritur = true; return; }
+  njBsky.sot++;
+  njShtoNeBuffer({
+    burimi: 'bluesky', ext_id: 'at://' + did + '/app.bsky.feed.post/' + c.rkey, url: 'https://bsky.app/profile/' + did + '/post/' + c.rkey,
+    autori: did, teksti: rec.text, publikuar: njBskyKoha(rec, p), rregullat: ids
+  });
+}
+
+function njBskyMbyll(ws) {
+  if (!ws) return;
+  try { ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null; } catch (e) { /* injoro */ }
+  try { ws.close(); } catch (e) { /* injoro */ }
+}
+function njBskyRiprovo() {
+  if (!njBsky.duhet) return;
+  clearTimeout(njBsky._rilid);
+  const vonese = Math.min(60000, 1000 * Math.pow(2, Math.min(6, njBsky.provat++)));
+  njBsky.rilidhje++;
+  njBsky._rilid = setTimeout(njBskyLidhu, vonese);
+  if (njBsky._rilid.unref) njBsky._rilid.unref();
+}
+function njBskyLidhu() {
+  if (!njBsky.duhet) return;
+  const ep = NJ_BSKY_ENDPOINTET[njBsky.ep % NJ_BSKY_ENDPOINTET.length];
+  let url = ep.url;
+  const k = njBsky.kursori;
+  if (k && k.l === ep.l && k.v && Date.now() - k.t < 3600000) {
+    const vl = ep.l === 'v1' ? Math.max(0, Number(k.v) - 3000000) : Math.max(0, Number(k.v) - 50);
+    url += (url.indexOf('?') >= 0 ? '&' : '?') + 'cursor=' + vl;
+  }
+  let ws;
+  try { ws = new WebSocket(url); } catch (e) { njBsky.gabim = njPastroGabimin(e); njBsky.ep++; njBskyRiprovo(); return; }
+  try { ws.binaryType = 'arraybuffer'; } catch (e) { /* injoro */ }
+  njBsky.ws = ws; njBsky.njohur = false; njBsky._nisur = Date.now();
+  ws.onopen = () => { if (njBsky.ws !== ws) return; njBsky.lidhur = true; njBsky.fundit = Date.now(); njBsky.gabim = null; };
+  ws.onmessage = ev => { if (njBsky.ws !== ws) return; njBsky.fundit = Date.now(); njBskyMesazhi(ev.data); };
+  // Kujdes: kur dorezimi (handshake) deshton, Node leshon vetem "error" e jo "close" (readyState mbetet 0), prandaj dy rrugat shkojne te e njejta funksion.
+  const deshtoi = ev => {
+    if (njBsky.ws !== ws) return;
+    njBsky.ws = null; njBsky.lidhur = false;
+    njBskyMbyll(ws);
+    if (!njBsky.duhet) return;
+    if (!njBsky.njohur) {
+      njBsky.gabim = 'Lidhja me Jetstream (' + ep.l + ') deshtoi ose u mbyll pa mesazhe te njohura' + (ev && ev.message ? ' (' + njPastroGabimin(ev.message) + ')' : '') +
+        (NJ_BSKY_ENDPOINTET.length > 1 ? '; po provoj adresen tjeter.' : '; po provoj serish.');
+      njBsky.ep++;
+    }
+    njBskyRiprovo();
+  };
+  ws.onerror = ev => { if (ws.readyState !== 1) deshtoi(ev); };
+  ws.onclose = ev => deshtoi(ev);
+}
+// Puls cdo 5 sekonda: roje (asnje mesazh per 45 s = lidhje e vdekur), ritmi, ruajtja e kursorit/numruesit, emrat e perdoruesve.
+function njBskyPuls() {
+  if (!njBsky.duhet) return;
+  njBsky._tik++;
+  const tani = Date.now();
+  if (njBsky.ws && njBsky.lidhur && tani - njBsky.fundit > 45000) {
+    njBsky.gabim = 'Asnje mesazh per 45 sekonda; po rilidhem.';
+    const ws = njBsky.ws; njBsky.ws = null; njBsky.lidhur = false; njBskyMbyll(ws);
+    if (!njBsky.njohur) njBsky.ep++;
+    njBskyRiprovo();
+  } else if (njBsky.ws && !njBsky.lidhur && tani - njBsky._nisur > 30000) {
+    // lidhja nuk u hap brenda 30 sekondave
+    njBsky.gabim = 'Lidhja me Jetstream nuk u hap brenda 30 sekondave; po provoj adresen tjeter.';
+    const ws = njBsky.ws; njBsky.ws = null; njBskyMbyll(ws); njBsky.ep++; njBskyRiprovo();
+  }
+  if (njBsky._tik % 2 === 0) {
+    const sek = Math.max(1, (tani - njBsky._pikat_at) / 1000);
+    njBsky.ritmi = Math.round((njBsky.postime - njBsky._pikat) / sek);
+    njBsky._pikat = njBsky.postime; njBsky._pikat_at = tani;
+    if (njBsky._ruajtur_sot !== njBsky.sot) { njBsky._ruajtur_sot = njBsky.sot; njRuaj('bsky_dita', njBsky.dita); njRuaj('bsky_numri', njBsky.sot); }
+    const kv = njBsky.kursori ? JSON.stringify(njBsky.kursori) : null;
+    if (kv && kv !== njBsky._kurs_ruajtur) { njBsky._kurs_ruajtur = kv; njRuaj('bsky_kursori', kv); }
+  }
+  if (njBsky._tik % 6 === 0) njBskyEmrat();
+}
+function njBskyNis() {
+  if (njBsky.duhet) return true;
+  if (typeof WebSocket !== 'function') { njBsky.gabim = 'Ky server nuk ka WebSocket (duhet Node 22 ose me i ri).'; return false; }
+  njBsky.duhet = true; njBsky.gabim = null; njBsky.provat = 0;
+  njBsky.postime = 0; njBsky.mesazhe = 0; njBsky.perputhje = 0; njBsky.te_panjohura = 0; njBsky.mostra = [];
+  njBsky._pikat = 0; njBsky._pikat_at = Date.now(); njBsky._tik = 0;
+  clearInterval(njBsky._puls);
+  njBsky._puls = setInterval(njBskyPuls, 5000);
+  if (njBsky._puls.unref) njBsky._puls.unref();
+  njBskyLidhu();
+  return true;
+}
+function njBskyNdalo() {
+  njBsky.duhet = false; njBsky.lidhur = false; njBsky.ritmi = 0;
+  clearTimeout(njBsky._rilid); clearInterval(njBsky._puls);
+  const ws = njBsky.ws; njBsky.ws = null; njBskyMbyll(ws);
+  if (njBsky.kursori) { njBsky.kursori = null; njBsky._kurs_ruajtur = null; njRuaj('bsky_kursori', null); }
+  njRuaj('bsky_dita', njBsky.dita); njRuaj('bsky_numri', njBsky.sot);
+}
+// Autori ruhet fillimisht si DID (Jetstream nuk jep emrin). Emrat (handle) merren nga API publik i Bluesky per postimet qe perputhen (pak ne dite); nese deshton, mbetet DID dhe lidhja funksionon prape.
+async function njBskyEmrat() {
+  if (njBsky._emrat_duke || njBsky._emrat_gabime >= 5) return;
+  njBsky._emrat_duke = true;
+  try {
+    const provuar = Array.from(njBsky._emrat_provuar);
+    const r = await pool.query(`SELECT DISTINCT autori FROM njoftime_postime WHERE burimi = 'bluesky' AND autori LIKE 'did:%' AND gjetur_at > now() - interval '3 days' AND autori <> ALL($1::text[]) LIMIT 25`, [provuar]);
+    const dids = r.rows.map(x => x.autori);
+    if (!dids.length) return;
+    const resp = await fetchMeKohe('https://public.api.bsky.app/xrpc/app.bsky.actor.getProfiles?' + dids.map(d => 'actors=' + encodeURIComponent(d)).join('&'), { headers: { Accept: 'application/json' } }, 15000);
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const d = await resp.json();
+    const lista = Array.isArray(d && d.profiles) ? d.profiles : [];
+    for (const pr of lista) {
+      if (pr && typeof pr.did === 'string' && typeof pr.handle === 'string' && pr.handle && pr.handle !== 'handle.invalid') {
+        await pool.query(`UPDATE njoftime_postime SET autori = $1 WHERE burimi = 'bluesky' AND autori = $2`, [pr.handle.slice(0, 200), pr.did]);
+      }
+    }
+    dids.forEach(x => njBsky._emrat_provuar.add(x));
+    if (njBsky._emrat_provuar.size > 5000) njBsky._emrat_provuar.clear();
+    njBsky._emrat_gabime = 0;
+  } catch (e) { njBsky._emrat_gabime++; console.error('njoftime emrat bluesky:', njPastroGabimin(e)); }
+  finally { njBsky._emrat_duke = false; }
+}
+// Pamja e sigurt per faqen.
+function njBskyStatusi() {
+  const ep = NJ_BSKY_ENDPOINTET[njBsky.ep % NJ_BSKY_ENDPOINTET.length];
+  let host = '';
+  try { host = new URL(ep.url.replace(/^ws/, 'http')).host; } catch (e) { host = ''; }
+  return {
+    aktiv: njBsky.duhet, lidhur: njBsky.lidhur, mesazhe: njBsky.mesazhe, postime: njBsky.postime, perputhje: njBsky.perputhje, ritmi: njBsky.ritmi,
+    sot: njBsky.dita === njDita() ? njBsky.sot : 0, kufiri: NJ_BSKY_KUFI, kufiri_arritur: njBsky.kufiri_arritur && njBsky.dita === njDita(),
+    fundit_sek: njBsky.fundit ? Math.round((Date.now() - njBsky.fundit) / 1000) : null, rilidhje: njBsky.rilidhje,
+    gabim: njBsky.gabim, host, protokolli: ep.l, te_panjohura: njBsky.te_panjohura, mostra: njBsky.mostra
+  };
+}
+
+// ---- Gjendja e pergjithshme dhe nisja ----
+const NJ_STATUSET = ['i ri', 'u pergjigj', 'e lashe'];
+async function njNumrat() {
+  const numrat = { 'i ri': 0, 'u pergjigj': 0, 'e lashe': 0 };
+  (await pool.query(`SELECT COALESCE(statusi, 'i ri') AS statusi, COUNT(*)::int AS n FROM njoftime_postime GROUP BY 1`)).rows.forEach(r => { if (r.statusi in numrat) numrat[r.statusi] = r.n; });
+  return numrat;
+}
+async function njGjendjaPlote() {
+  const numrat = await njNumrat();
+  return {
+    ok: true, bluesky: njBskyStatusi(), numrat, i_ri: numrat['i ri'],
+    rregulla: { gjithsej: njRregullat.length, aktive: njRregullat.filter(r => r.aktive && r.ast).length },
+    ruajtja_dite: NJ_RUAJ_DITE,
+    db: { ruajtur: njStat.ruajtur, buffer: njBuf.length, gabim: njStat.gabim_db },
+    ka_websocket: typeof WebSocket === 'function'
+  };
+}
+
+// Nisja e serverit: termat e para (vetem hera e pare), dhe Bluesky nese ishte i ndezur para rinisjes.
+async function nisNjoftime() {
+  try {
+    if (!(await njGati)) return;
+    const g = await njLexoGjendjen();
+    if (!g.rregullat_fillestare) {
+      const ekz = (await pool.query('SELECT COUNT(*)::int AS n FROM njoftime_rregulla')).rows[0].n;
+      if (!ekz) await njShtoFillestaret();
+      await njRuaj('rregullat_fillestare', '1');
+    }
+    await njRifreskoRregullat();
+    if (g.bsky_dita === njDita()) { njBsky.dita = g.bsky_dita; njBsky.sot = parseInt(g.bsky_numri, 10) || 0; }
+    if (g.bsky_kursori) {
+      try { const k = JSON.parse(g.bsky_kursori); if (k && (k.l === 'v1' || k.l === 'v2') && k.v && k.t) njBsky.kursori = k; } catch (e) { /* kursor i demtuar: injorohet */ }
+    }
+    const t1 = setInterval(njShkarko, 1000), t2 = setInterval(njPastro, 3600 * 1000);
+    [t1, t2].forEach(t => { if (t.unref) t.unref(); });
+    const t3 = setTimeout(njPastro, 60 * 1000); if (t3.unref) t3.unref();
+    if (g.bsky_aktiv === '1') njBskyNis();
+  } catch (e) { console.error('njoftime nisja:', e.message); }
+}
+
 app.get('/', (req, res) => {
   res.type('html').send(`<!DOCTYPE html>
 <html lang="sq"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1206,6 +1754,20 @@ app.get('/', (req, res) => {
   #status2{ font-size:13px; color:#8b949e; margin-top:10px; }
   #count2{ font-size:13px; color:#3fb950; margin-top:6px; font-weight:600; }
   .badge{ font-size:11px; background:#2a313c; padding:2px 8px; border-radius:10px; color:#8b949e; }
+  .njRreshti{ display:flex; gap:12px; flex-wrap:wrap; margin-bottom:14px; }
+  .njKart{ flex:1; min-width:280px; background:#141b26; border:1px solid #2a313c; border-radius:10px; padding:12px 14px; }
+  .njKart h3{ margin:0 0 4px; font-size:15px; }
+  .njSt{ font-size:12px; color:#8b949e; line-height:1.7; margin:6px 0 10px; word-break:break-word; }
+  .njPika{ display:inline-block; width:8px; height:8px; border-radius:50%; background:#6e7681; margin-right:6px; }
+  .njPika.on{ background:#3fb950; }
+  .njPika.pauze{ background:#d29922; }
+  .njPika.gabim{ background:#f85149; }
+  .njMono{ font:12px/1.5 ui-monospace,Consolas,monospace; color:#c9d1d9; word-break:break-word; }
+  .njSeksion{ border:1px solid #2a313c; border-radius:10px; padding:10px 14px; margin-bottom:14px; background:#10151f; }
+  .njSeksion > summary{ cursor:pointer; font-weight:600; font-size:14px; }
+  .njBtnGri{ background:#2a313c; }
+  .njBtnPer{ padding:4px 10px; font-size:12px; background:#2a313c; }
+  .njTekst{ white-space:pre-wrap; word-break:break-word; max-width:520px; }
 </style></head>
 <body><div class="wrap">
   <h1>Zbulim Bizneseh</h1>
@@ -1217,6 +1779,7 @@ app.get('/', (req, res) => {
     <div class="tab" id="tabKompani" onclick="ndryshoTab('kompani')">Kompani te reja</div>
     <div class="tab" id="tabLancime" onclick="ndryshoTab('lancime')">Lancime</div>
     <div class="tab" id="tabAlerte" onclick="ndryshoTab('alerte')">Alerte</div>
+    <div class="tab" id="tabNjoftime" onclick="ndryshoTab('njoftime')">Njoftimet</div>
   </div>
 
   <div class="sec-panel aktiv" id="panelGjenerim">
@@ -1372,6 +1935,65 @@ app.get('/', (req, res) => {
     <div id="alerteRez"></div>
   </div>
 
+  <div class="sec-panel" id="panelNjoftime">
+    <p class="mut">Njoftime vete, pa kerkime orare: aplikacioni degjon postimet e reja ne Bluesky (falas, pa celes) dhe ruan vetem ato qe perputhen me termat e tu. Si shkruhen termat: "fraza" ne thonjeza, fjale te lira, OR = ose (me shkronja te medha), minus perpara = perjashto, kllapa per grupe; hapesira midis pjeseve = dhe. Ruhen vetem lidhja, autori, teksti dhe koha. Asgje nuk i pergjigjet automatikisht askujt: ti hap lidhjen dhe shkruan vete.</p>
+    <div class="njRreshti">
+      <div class="njKart">
+        <h3><span class="njPika" id="njBskyPika"></span>Bluesky <span class="badge">falas, pa celes</span></h3>
+        <div class="njSt" id="njBskySt">Po ngarkoj...</div>
+        <button id="njBskyBtn" onclick="njBurimi('bluesky')">Ndiz</button>
+      </div>
+    </div>
+    <div id="njMesazhi" style="font-size:13px; margin-bottom:10px; min-height:4px;"></div>
+
+    <details class="njSeksion" id="njRregullatSek" open>
+      <summary>Termat <span id="njRregullatNr" style="color:#8b949e; font-weight:400;"></span></summary>
+      <div style="margin-top:10px;">
+        <div class="row">
+          <button class="njBtnGri" onclick="njFillestare(this)">Vendos termat e PhronexusAI (12)</button>
+        </div>
+        <div id="njRregullatLista"></div>
+        <div style="font-size:13px; font-weight:600; margin:14px 0 6px;" id="njFormTitulli">Term i ri</div>
+        <div class="row">
+          <input type="text" id="njFEmri" placeholder="Emri (p.sh. Klientet e pare)" style="max-width:260px;" />
+          <input type="text" id="njFKategoria" placeholder="Kategoria (opsionale)" style="max-width:200px;" />
+        </div>
+        <textarea id="njFRregulla" rows="3" placeholder='p.sh. ("first customers" OR "first users") (SaaS OR startup) -is:retweet lang:en'></textarea>
+        <div class="row" style="margin-top:8px;">
+          <button onclick="njRuajRregullen(this)">Ruaj termin</button>
+          <button class="njBtnGri" onclick="njFormaPastro(false)">Pastro formen</button>
+        </div>
+        <div id="njFStat" style="font-size:13px; color:#8b949e;"></div>
+      </div>
+    </details>
+
+    <details class="njSeksion">
+      <summary>Prove nje tekst</summary>
+      <div style="margin-top:10px;">
+        <div style="font-size:12px; color:#8b949e; margin-bottom:6px;">Ngjit nje postim per te pare cilat terma e kapin. Nese forma e termit me siper ka tekst, provohet edhe ajo (para se ta ruash).</div>
+        <textarea id="njTestTeksti" rows="3"></textarea>
+        <div class="row" style="margin-top:8px;"><button onclick="njTestoTekstin(this)">Testo</button></div>
+        <div id="njTestRez" style="font-size:13px; color:#c9d1d9;"></div>
+      </div>
+    </details>
+
+    <div class="row" style="align-items:center;">
+      <select id="njFiltriStatusi" onchange="njNgarko()">
+        <option value="i ri">Te reja</option>
+        <option value="u pergjigj">U pergjigj</option>
+        <option value="e lashe">E lashe</option>
+        <option value="">Te gjitha</option>
+      </select>
+      <select id="njFiltriRregulla" onchange="njNgarko()" style="max-width:260px;">
+        <option value="">Te gjitha termat</option>
+      </select>
+      <button class="njBtnGri" onclick="njNgarko()">Rifresko</button>
+    </div>
+    <div id="njInfo" style="font-size:13px; color:#8b949e; margin-bottom:6px;"></div>
+    <div id="njStat" style="font-size:13px; color:#8b949e; margin-bottom:10px;"></div>
+    <div id="njRez"></div>
+  </div>
+
 </div>
 <script>
 var pollTimer = null;
@@ -1393,6 +2015,9 @@ function ndryshoTab(cila){
   if(cila === 'lancime'){ lancimeNgarko(); }
   document.getElementById('panelAlerte').className = cila === 'alerte' ? 'sec-panel aktiv' : 'sec-panel';
   if(cila === 'alerte'){ alerteNgarko(); }
+  document.getElementById('tabNjoftime').className = cila === 'njoftime' ? 'tab aktiv' : 'tab';
+  document.getElementById('panelNjoftime').className = cila === 'njoftime' ? 'sec-panel aktiv' : 'sec-panel';
+  if(cila === 'njoftime'){ njHape(); } else if(njHapur){ njMbyll(); }
   if(cila === 'ruajtura'){ ngarkoKategorite('filterKategoria'); shikoTeGjitha(); }
   if(cila === 'shkarko'){ ngarkoKategorite('shkarkoKategoria'); }
 }
@@ -2206,6 +2831,331 @@ function alerteShfaq(d){
   });
   tbl.appendChild(tbody); rez.appendChild(tbl);
 }
+// ===== NJOFTIMET (kodi i faqes) =====
+// Kujdes: ky kod ndodhet brenda nje template literal ne server.js: pa backtick, pa dollar me kllapa gjarperore, pa viza te pjerreta mbrapsht.
+var njHapur = false, njTimer = null, njGjendjaFundit = null, njSeq = 0, njRedaktim = null;
+var njRregullat = [], njRrHarta = {}, njRows = [], njNumrat = {};
+
+function njElement(tag, tekst, stil){
+  var e = document.createElement(tag);
+  if(tekst !== undefined && tekst !== null){ e.textContent = tekst; }
+  if(stil){ e.style.cssText = stil; }
+  return e;
+}
+function njMesazh(tekst, gabim){
+  var m = document.getElementById('njMesazhi');
+  m.textContent = tekst || '';
+  m.style.color = gabim ? '#f85149' : '#3fb950';
+}
+function njPara(iso){
+  if(!iso){ return ''; }
+  var t = new Date(iso).getTime();
+  if(isNaN(t)){ return ''; }
+  var s = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if(s < 60){ return 'para ' + s + ' s'; }
+  if(s < 3600){ return 'para ' + Math.round(s / 60) + ' min'; }
+  if(s < 86400){ return 'para ' + Math.round(s / 3600) + ' ore'; }
+  return 'para ' + Math.round(s / 86400) + ' dite';
+}
+function njVlerePerBurimin(g, burimi){ return g && g[burimi] ? g[burimi] : null; }
+
+// ---- Kartat e burimeve ----
+function njShfaqGjendjen(g){
+  var b = g.bluesky || {};
+  // Bluesky
+  var bst = document.getElementById('njBskySt'); bst.innerHTML = '';
+  document.getElementById('njBskyPika').className = 'njPika' + (b.lidhur ? ' on' : (b.aktiv ? ' pauze' : (b.gabim ? ' gabim' : '')));
+  document.getElementById('njBskyBtn').textContent = b.aktiv ? 'Fik' : 'Ndiz';
+  if(!g.ka_websocket){ bst.appendChild(njElement('div', 'Ky server nuk ka WebSocket (duhet Node 22 ose me i ri).', 'color:#f85149;')); }
+  bst.appendChild(njElement('div', b.aktiv ? (b.lidhur ? 'Lidhur: po degjon postimet e reja.' : 'Po lidhet me Jetstream...') : 'Fikur.'));
+  if(b.aktiv && b.lidhur){
+    bst.appendChild(njElement('div', 'Postime te lexuara qe nga ndezja: ' + b.postime + ' (' + (b.ritmi > 0 ? 'rreth ' + b.ritmi + ' ne sekonde' : 'po llogaritet ritmi') + ') | perputhje: ' + b.perputhje + (b.fundit_sek !== null ? ' | mesazhi i fundit para ' + b.fundit_sek + ' s' : '')));
+  }
+  bst.appendChild(njElement('div', 'Ruajtur sot: ' + b.sot + ' / ' + b.kufiri + (b.kufiri_arritur ? ' (kufiri u arrit: nuk ruhet me asgje deri neser)' : '') + (b.host ? ' | ' + b.host + ' (' + b.protokolli + ')' : '')));
+  if(b.gabim){ bst.appendChild(njElement('div', b.gabim, 'color:#f85149;')); }
+  if(b.te_panjohura){ bst.appendChild(njElement('div', 'Mesazhe qe nuk u kuptuan: ' + b.te_panjohura + (b.mostra && b.mostra.length ? ' | mostra: ' + b.mostra.join(' || ') : ''), 'color:#d29922;')); }
+  // Etiketa e tab-it
+  var tab = document.getElementById('tabNjoftime');
+  tab.textContent = 'Njoftimet' + (g.i_ri > 0 ? ' (' + g.i_ri + ')' : '');
+}
+async function njGjendja(){
+  try{
+    var r = await fetch('/api/njoftime/gjendja');
+    var d = await lancimeJson(r);
+    if(d.error){ if(njHapur){ njMesazh('Gabim: ' + d.error, true); } return null; }
+    var iriMe = njGjendjaFundit ? njGjendjaFundit.i_ri : null;
+    njGjendjaFundit = d;
+    njShfaqGjendjen(d);
+    if(njHapur && iriMe !== null && d.i_ri > iriMe){
+      if(!njRows.length){ njNgarko(true); }
+      else { document.getElementById('njStat').textContent = 'Ka njoftime te reja qe nuk shfaqen akoma: shtyp Rifresko.'; }
+    }
+    return d;
+  }catch(e){ return null; }
+}
+async function njBurimi(burimi){
+  var g = njGjendjaFundit, v = njVlerePerBurimin(g, burimi);
+  var aktiv = v ? !v.aktiv : true;
+  njMesazh('', false);
+  try{
+    var r = await fetch('/api/njoftime/burimi', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ burimi: burimi, aktiv: aktiv }) });
+    var d = await lancimeJson(r);
+    if(d.error){ njMesazh('Gabim: ' + d.error, true); return; }
+  }catch(e){ njMesazh('Gabim rrjeti: ' + e.message, true); return; }
+  njGjendja();
+}
+// ---- Rregullat ----
+async function njNgarkoRregullat(){
+  try{
+    var r = await fetch('/api/njoftime/rregullat');
+    var d = await lancimeJson(r);
+    if(d.error){ document.getElementById('njRregullatLista').textContent = 'Gabim: ' + d.error; return; }
+    njRregullat = d.rregullat || [];
+    njRrHarta = {};
+    njRregullat.forEach(function(x){ njRrHarta[x.id] = x; });
+    njShfaqRregullat();
+  }catch(e){ document.getElementById('njRregullatLista').textContent = 'Gabim rrjeti: ' + e.message; }
+}
+function njPerditesoFiltrinRregulla(){
+  var sa = document.getElementById('njFiltriRregulla'), zgj = sa.value;
+  sa.innerHTML = '';
+  var o0 = document.createElement('option'); o0.value = ''; o0.textContent = 'Te gjitha termat'; sa.appendChild(o0);
+  njRregullat.forEach(function(x){
+    var op = document.createElement('option'); op.value = String(x.id); op.textContent = x.emri; sa.appendChild(op);
+  });
+  sa.value = zgj;
+}
+function njShfaqRregullat(){
+  var vend = document.getElementById('njRregullatLista'); vend.innerHTML = '';
+  document.getElementById('njRregullatNr').textContent = '(' + njRregullat.length + ')';
+  if(!njRregullat.length){
+    vend.appendChild(njElement('div', 'Asnje term. Shtyp "Vendos termat e PhronexusAI" ose shto nje me poshte.', 'font-size:13px; color:#8b949e;'));
+    njPerditesoFiltrinRregulla();
+    return;
+  }
+  var tbl = document.createElement('table');
+  var thead = document.createElement('thead'), hr = document.createElement('tr');
+  ['Aktive', 'Emri', 'Termi', '7 dite', ''].forEach(function(t){ hr.appendChild(njElement('th', t)); });
+  thead.appendChild(hr); tbl.appendChild(thead);
+  var tbody = document.createElement('tbody');
+  njRregullat.forEach(function(k){
+    var tr = document.createElement('tr');
+    var tdA = document.createElement('td'), ck = document.createElement('input');
+    ck.type = 'checkbox'; ck.checked = !!k.aktive; ck.style.cssText = 'width:16px; height:16px; padding:0;';
+    ck.onchange = function(){ njAktive(k.id, ck.checked); };
+    tdA.appendChild(ck); tr.appendChild(tdA);
+    var tdE = document.createElement('td');
+    tdE.appendChild(njElement('div', k.emri, 'font-weight:600;'));
+    if(k.kategoria){ tdE.appendChild(njElement('span', k.kategoria, 'font-size:11px; color:#8b949e;')); }
+    tr.appendChild(tdE);
+    var tdR = document.createElement('td'); tdR.style.cssText = 'max-width:460px;';
+    tdR.appendChild(njElement('div', k.rregulla, 'font:12px/1.5 ui-monospace,Consolas,monospace; color:#c9d1d9; word-break:break-word;'));
+    if(k.gabim){ tdR.appendChild(njElement('div', 'Gabim ne term: ' + k.gabim, 'font-size:12px; color:#f85149;')); }
+    if(k.paralajmerime && k.paralajmerime.length){ tdR.appendChild(njElement('div', 'Bluesky nuk i vlereson keto operatore (kalojne si te pavendosura): ' + k.paralajmerime.join(', '), 'font-size:12px; color:#d29922;')); }
+    tr.appendChild(tdR);
+    tr.appendChild(njElement('td', String(k.perputhje_7d)));
+    var tdV = document.createElement('td'); tdV.style.cssText = 'white-space:nowrap;';
+    var bN = njElement('button', 'Ndrysho'); bN.className = 'njBtnPer'; bN.onclick = function(){ njNdrysho(k.id); };
+    var bF = njElement('button', 'Fshij'); bF.className = 'njBtnPer'; bF.style.marginLeft = '6px'; bF.onclick = function(){ njFshij(k.id); };
+    tdV.appendChild(bN); tdV.appendChild(bF); tr.appendChild(tdV);
+    tbody.appendChild(tr);
+  });
+  tbl.appendChild(tbody); vend.appendChild(tbl);
+  njPerditesoFiltrinRregulla();
+}
+async function njAktive(id, aktive){
+  try{
+    var r = await fetch('/api/njoftime/rregull/aktive', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id: id, aktive: aktive }) });
+    var d = await lancimeJson(r);
+    if(d.error){ njMesazh('Gabim: ' + d.error, true); }
+  }catch(e){ njMesazh('Gabim rrjeti: ' + e.message, true); }
+  njNgarkoRregullat();
+}
+async function njFshij(id){
+  if(!window.confirm('Ta fshij kete term? Njoftimet e ruajtura mbeten.')){ return; }
+  try{
+    var r = await fetch('/api/njoftime/rregull/fshij', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id: id }) });
+    var d = await lancimeJson(r);
+    if(d.error){ njMesazh('Gabim: ' + d.error, true); }
+  }catch(e){ njMesazh('Gabim rrjeti: ' + e.message, true); }
+  if(njRedaktim === id){ njFormaPastro(false); }
+  njNgarkoRregullat();
+}
+function njNdrysho(id){
+  var k = njRrHarta[id];
+  if(!k){ return; }
+  njRedaktim = id;
+  document.getElementById('njFEmri').value = k.emri || '';
+  document.getElementById('njFKategoria').value = k.kategoria || '';
+  document.getElementById('njFRregulla').value = k.rregulla || '';
+  document.getElementById('njFormTitulli').textContent = 'Ndrysho termin: ' + k.emri;
+  document.getElementById('njFStat').textContent = '';
+  document.getElementById('njFEmri').focus();
+}
+function njFormaPastro(mbaj){
+  njRedaktim = null;
+  document.getElementById('njFEmri').value = '';
+  document.getElementById('njFKategoria').value = '';
+  document.getElementById('njFRregulla').value = '';
+  document.getElementById('njFormTitulli').textContent = 'Term i ri';
+  if(!mbaj){ document.getElementById('njFStat').textContent = ''; }
+}
+async function njRuajRregullen(btn){
+  var stat = document.getElementById('njFStat');
+  var emri = document.getElementById('njFEmri').value.trim(), kat = document.getElementById('njFKategoria').value.trim(), teksti = document.getElementById('njFRregulla').value.trim();
+  if(!emri || !teksti){ stat.textContent = 'Shkruaj emrin dhe termin.'; return; }
+  btn.disabled = true; stat.textContent = 'Po ruaj...';
+  try{
+    var trupi = { emri: emri, kategoria: kat, rregulla: teksti };
+    if(njRedaktim !== null){
+      trupi.id = njRedaktim;
+      var ekz = njRrHarta[njRedaktim];
+      if(ekz){ trupi.aktive = !!ekz.aktive; }
+    }
+    var r = await fetch('/api/njoftime/rregull', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(trupi) });
+    var d = await lancimeJson(r);
+    if(d.error){ stat.textContent = 'Gabim: ' + d.error; }
+    else {
+      njFormaPastro(true);
+      stat.textContent = 'U ruajt.' + (d.paralajmerime && d.paralajmerime.length ? ' Kujdes: Bluesky nuk i vlereson keto operatore (kalojne si te pavendosura): ' + d.paralajmerime.join(', ') + '.' : '');
+      await njNgarkoRregullat();
+    }
+  }catch(e){ stat.textContent = 'Gabim rrjeti: ' + e.message; }
+  btn.disabled = false;
+}
+async function njFillestare(btn){
+  btn.disabled = true; njMesazh('', false);
+  try{
+    var r = await fetch('/api/njoftime/fillestare', { method:'POST' });
+    var d = await lancimeJson(r);
+    if(d.error){ njMesazh('Gabim: ' + d.error, true); }
+    else { njMesazh(d.shtuar ? ('U shtuan ' + d.shtuar + ' terma te PhronexusAI.') : 'Te gjithe termat e PhronexusAI ekzistojne tashme.', false); await njNgarkoRregullat(); }
+  }catch(e){ njMesazh('Gabim rrjeti: ' + e.message, true); }
+  btn.disabled = false;
+}
+async function njTestoTekstin(btn){
+  var rez = document.getElementById('njTestRez'); rez.innerHTML = '';
+  var teksti = document.getElementById('njTestTeksti').value;
+  if(!teksti.trim()){ rez.textContent = 'Ngjit nje tekst fillimisht.'; return; }
+  var trupi = { teksti: teksti };
+  var rr = document.getElementById('njFRregulla').value.trim();
+  if(rr){ trupi.rregulla = rr; }
+  btn.disabled = true;
+  try{
+    var r = await fetch('/api/njoftime/teston', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(trupi) });
+    var d = await lancimeJson(r);
+    if(d.error){ rez.textContent = 'Gabim: ' + d.error; }
+    else {
+      if(d.perputhen && d.perputhen.length){
+        rez.appendChild(njElement('div', 'Termat e ruajtur qe e kapin: ' + d.perputhen.map(function(x){ return x.emri + (x.aktive ? '' : ' (jo aktive)'); }).join(', '), 'color:#3fb950;'));
+      } else { rez.appendChild(njElement('div', 'Asnje term i ruajtur nuk e kap kete tekst.', 'color:#d29922;')); }
+      if(d.provim){
+        if(d.provim.ok){
+          rez.appendChild(njElement('div', d.provim.perputhet ? 'Termi i formes: PERPUTHET.' : 'Termi i formes: nuk perputhet.', d.provim.perputhet ? 'color:#3fb950;' : 'color:#d29922;'));
+          if(d.provim.paralajmerime && d.provim.paralajmerime.length){ rez.appendChild(njElement('div', 'Operatore qe nuk vleresohen vendas: ' + d.provim.paralajmerime.join(', '), 'color:#d29922;')); }
+        } else { rez.appendChild(njElement('div', 'Termi i formes ka gabim: ' + d.provim.error, 'color:#f85149;')); }
+      }
+    }
+  }catch(e){ rez.textContent = 'Gabim rrjeti: ' + e.message; }
+  btn.disabled = false;
+}
+
+// ---- Rezultatet ----
+async function njNgarko(tace){
+  var nr = ++njSeq, stat = document.getElementById('njStat');
+  if(!tace){ stat.textContent = 'Po ngarkoj...'; }
+  var url = '/api/njoftime?limit=200';
+  var s = document.getElementById('njFiltriStatusi').value, ru = document.getElementById('njFiltriRregulla').value;
+  if(s){ url += '&statusi=' + encodeURIComponent(s); }
+  if(ru){ url += '&rregulla=' + encodeURIComponent(ru); }
+  try{
+    var r = await fetch(url);
+    var d = await lancimeJson(r);
+    if(nr !== njSeq){ return; }
+    if(d.error){ stat.textContent = 'Gabim: ' + d.error; return; }
+    stat.textContent = '';
+    njRows = d.rows || []; njNumrat = d.numrat || {};
+    njShfaqRezultatet();
+  }catch(e){ if(nr === njSeq){ stat.textContent = 'Gabim rrjeti: ' + e.message; } }
+}
+async function njStatusi(id, vlera){
+  try{
+    var r = await fetch('/api/njoftime/statusi', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id: id, statusi: vlera }) });
+    var d = await lancimeJson(r);
+    if(d.error){ njMesazh('Gabim: ' + d.error, true); return; }
+  }catch(e){ njMesazh('Gabim rrjeti: ' + e.message, true); return; }
+  njNgarko(true);
+  njGjendja();
+}
+function njAutori(k){
+  var a = String(k.autori || '');
+  var dv = document.createElement('div');
+  if(!a){ return dv; }
+  var tekst = a.indexOf('did:') === 0 ? (a.slice(0, 20) + '...') : ('@' + a);
+  var href = 'https://bsky.app/profile/' + encodeURIComponent(a);
+  var l = document.createElement('a'); l.textContent = tekst; l.href = href; l.target = '_blank'; l.rel = 'noopener noreferrer';
+  dv.appendChild(l);
+  return dv;
+}
+function njShfaqRezultatet(){
+  var rez = document.getElementById('njRez'); rez.innerHTML = '';
+  var n = njNumrat || {};
+  document.getElementById('njInfo').textContent = 'Te reja: ' + (n['i ri'] || 0) + ' | u pergjigj: ' + (n['u pergjigj'] || 0) + ' | e lashe: ' + (n['e lashe'] || 0) +
+    (njGjendjaFundit && njGjendjaFundit.rregulla ? ' | terma aktive: ' + njGjendjaFundit.rregulla.aktive + ' nga ' + njGjendjaFundit.rregulla.gjithsej : '') +
+    (njGjendjaFundit ? ' | postimet ruhen ' + njGjendjaFundit.ruajtja_dite + ' dite (pervec atyre "u pergjigj")' : '');
+  if(!njRows.length){
+    rez.appendChild(njElement('div', 'Asnje njoftim me kete filter. Nese sapo e ndeze nje burim, prit pak: njoftimet shfaqen sapo nje postim perputhet me nje rregull.', 'font-size:13px; color:#8b949e;'));
+    return;
+  }
+  var tbl = document.createElement('table');
+  var thead = document.createElement('thead'), hr = document.createElement('tr');
+  ['Autori', 'Postimi', 'Termat', 'Koha', 'Statusi'].forEach(function(t){ hr.appendChild(njElement('th', t)); });
+  thead.appendChild(hr); tbl.appendChild(thead);
+  var tbody = document.createElement('tbody');
+  njRows.forEach(function(k){
+    var tr = document.createElement('tr');
+    var tdAu = document.createElement('td'); tdAu.style.cssText = 'font-size:12px; word-break:break-all; max-width:150px;'; tdAu.appendChild(njAutori(k)); tr.appendChild(tdAu);
+    var tdP = document.createElement('td');
+    tdP.appendChild(njElement('div', String(k.teksti || '').slice(0, 600), 'white-space:pre-wrap; word-break:break-word; max-width:520px;'));
+    if(k.url && k.url.indexOf('https://') === 0){
+      var a = document.createElement('a'); a.textContent = 'Hape postimin'; a.href = k.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.style.cssText = 'font-size:12px;';
+      tdP.appendChild(a);
+    }
+    tr.appendChild(tdP);
+    var tdR = document.createElement('td'); tdR.style.cssText = 'font-size:12px; color:#8b949e; min-width:120px;';
+    (k.rregullat || []).forEach(function(id){
+      var rr = njRrHarta[id];
+      var dv = njElement('div', rr ? rr.emri : ('term #' + id)); dv.style.marginBottom = '3px'; tdR.appendChild(dv);
+    });
+    tr.appendChild(tdR);
+    var tdT = document.createElement('td'); tdT.style.cssText = 'white-space:nowrap; font-size:12px;';
+    tdT.textContent = njPara(k.publikuar || k.gjetur_at); tdT.title = lancimeData(k.publikuar || k.gjetur_at);
+    tr.appendChild(tdT);
+    var tdS = document.createElement('td'), sel = document.createElement('select');
+    [['i ri', 'I ri'], ['u pergjigj', 'U pergjigj'], ['e lashe', 'E lashe']].forEach(function(o){
+      var op = document.createElement('option'); op.value = o[0]; op.textContent = o[1]; if(o[0] === k.statusi){ op.selected = true; } sel.appendChild(op);
+    });
+    sel.onchange = function(){ njStatusi(k.id, sel.value); };
+    tdS.appendChild(sel); tr.appendChild(tdS);
+    tbody.appendChild(tr);
+  });
+  tbl.appendChild(tbody); rez.appendChild(tbl);
+}
+
+// ---- Hapja / mbyllja e tab-it ----
+function njHape(){
+  njHapur = true;
+  clearInterval(njTimer); njTimer = setInterval(njGjendja, 8000);
+  njGjendja();
+  njNgarkoRregullat().then(function(){ njNgarko(); });
+}
+function njMbyll(){
+  njHapur = false;
+  clearInterval(njTimer); njTimer = setInterval(njGjendja, 60000);
+}
+njMbyll();
+setTimeout(njGjendja, 1500);
+
 function tekstArsyeja(a){
   if(a === 'pa_kompani') return 'nuk u gjet kompania te Generect';
   if(a === 'pa_person') return 'nuk u gjet CEO, Founder apo Owner';
@@ -2982,8 +3932,156 @@ app.post('/api/lancime/email', async (req, res) => {
   finally { emailNeVazhdim--; }
 });
 
+// ---- NJOFTIMET ----
+// Mbron nga kerkesat qe vijne para se tabelat te jene krijuar (ose kur krijimi deshtoi).
+async function njPrit(res) {
+  if (await njGati) return true;
+  res.status(503).json({ error: 'Tabelat e njoftimeve nuk u krijuan (shih logjet e serverit).' });
+  return false;
+}
+const njGabim = (res, e, kodi) => res.status(kodi || 500).json({ error: njPastroGabimin(e) });
+
+app.get('/api/njoftime/gjendja', async (req, res) => {
+  try { if (!(await njPrit(res))) return; res.json(await njGjendjaPlote()); } catch (e) { njGabim(res, e); }
+});
+
+app.get('/api/njoftime/rregullat', async (req, res) => {
+  try {
+    if (!(await njPrit(res))) return;
+    await njRifreskoRregullat();
+    const harta = {};
+    (await pool.query(`SELECT r AS id, COUNT(*)::int AS n FROM njoftime_postime p, UNNEST(p.rregullat) AS r WHERE p.gjetur_at > now() - interval '7 days' GROUP BY r`)).rows.forEach(x => { harta[x.id] = x.n; });
+    res.json({
+      ok: true,
+      rregullat: njRregullat.map(r => ({
+        id: r.id, emri: r.emri, kategoria: r.kategoria, rregulla: r.rregulla, aktive: r.aktive,
+        gabim: r.gabim, paralajmerime: r.paralajmerime, perputhje_7d: harta[r.id] || 0
+      }))
+    });
+  } catch (e) { njGabim(res, e); }
+});
+
+// Shton ose ndryshon nje term/rregull (me id = ndryshim).
+app.post('/api/njoftime/rregull', async (req, res) => {
+  try {
+    if (!(await njPrit(res))) return;
+    const b = req.body || {};
+    const emri = String(b.emri || '').trim().slice(0, 80);
+    const kategoria = String(b.kategoria || '').trim().slice(0, 40) || null;
+    if (!emri) return res.status(400).json({ error: 'Shkruaj nje emer per rregullen.' });
+    let p;
+    try { p = njPergatitRregullen(b.rregulla); } catch (e) { return res.status(400).json({ error: e.message }); }
+    const aktive = b.aktive === undefined ? true : !!b.aktive;
+    let id = parseInt(b.id, 10);
+    if (Number.isInteger(id)) {
+      const r = await pool.query('UPDATE njoftime_rregulla SET emri = $1, kategoria = $2, rregulla = $3, aktive = $4 WHERE id = $5', [emri, kategoria, p.rregulla, aktive, id]);
+      if (!r.rowCount) return res.status(404).json({ error: 'Rregulla nuk u gjet.' });
+    } else {
+      const n = (await pool.query('SELECT COUNT(*)::int AS n FROM njoftime_rregulla')).rows[0].n;
+      if (n >= 200) return res.status(400).json({ error: 'Maksimumi 200 rregulla.' });
+      id = (await pool.query('INSERT INTO njoftime_rregulla (emri, kategoria, rregulla, aktive) VALUES ($1, $2, $3, $4) RETURNING id', [emri, kategoria, p.rregulla, aktive])).rows[0].id;
+    }
+    await njRifreskoRregullat();
+    res.json({ ok: true, id, paralajmerime: p.paralajmerime });
+  } catch (e) { njGabim(res, e); }
+});
+
+app.post('/api/njoftime/rregull/aktive', async (req, res) => {
+  try {
+    if (!(await njPrit(res))) return;
+    const b = req.body || {};
+    const id = parseInt(b.id, 10);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'Id e pavlefshme.' });
+    const r = await pool.query('UPDATE njoftime_rregulla SET aktive = $1 WHERE id = $2', [!!b.aktive, id]);
+    await njRifreskoRregullat();
+    res.json({ ok: true, ndryshuar: r.rowCount || 0 });
+  } catch (e) { njGabim(res, e); }
+});
+
+app.post('/api/njoftime/rregull/fshij', async (req, res) => {
+  try {
+    if (!(await njPrit(res))) return;
+    const id = parseInt((req.body || {}).id, 10);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'Id e pavlefshme.' });
+    const r = await pool.query('DELETE FROM njoftime_rregulla WHERE id = $1', [id]);
+    await njRifreskoRregullat();
+    res.json({ ok: true, fshire: r.rowCount || 0 });
+  } catch (e) { njGabim(res, e); }
+});
+
+// Shton termat e para te PhronexusAI qe mungojne.
+app.post('/api/njoftime/fillestare', async (req, res) => {
+  try {
+    if (!(await njPrit(res))) return;
+    const shtuar = await njShtoFillestaret();
+    res.json({ ok: true, shtuar });
+  } catch (e) { njGabim(res, e); }
+});
+
+// Ndez ose fik Bluesky ({ burimi: 'bluesky', aktiv: true | false }); zgjedhja ruhet dhe vazhdon pas rinisjes.
+app.post('/api/njoftime/burimi', async (req, res) => {
+  try {
+    if (!(await njPrit(res))) return;
+    const b = req.body || {};
+    if (b.burimi !== 'bluesky') return res.status(400).json({ error: 'Burim i panjohur.' });
+    if (b.aktiv) {
+      if (!njBskyNis()) return res.status(400).json({ error: njBsky.gabim || 'Bluesky nuk u ndez.' });
+      await njRuaj('bsky_aktiv', '1');
+    } else { njBskyNdalo(); await njRuaj('bsky_aktiv', '0'); }
+    res.json({ ok: true, bluesky: njBskyStatusi() });
+  } catch (e) { njGabim(res, e); }
+});
+
+// Provon nje tekst kunder termave (dhe opsionalisht kunder nje rregulle te re para se ta ruash).
+app.post('/api/njoftime/teston', async (req, res) => {
+  try {
+    if (!(await njPrit(res))) return;
+    const b = req.body || {};
+    const teksti = String(b.teksti || '').slice(0, 2000);
+    if (!teksti.trim()) return res.status(400).json({ error: 'Shkruaj nje tekst per ta provuar.' });
+    const kont = njKontekst(teksti, {});
+    const perputhen = njRregullat.filter(r => r.ast && njVlereso(r.ast, kont) === true).map(r => ({ id: r.id, emri: r.emri, aktive: r.aktive }));
+    let provim = null;
+    if (String(b.rregulla || '').trim()) {
+      try { const p = njPergatitRregullen(b.rregulla); provim = { ok: true, perputhet: njVlereso(p.ast, kont) === true, paralajmerime: p.paralajmerime }; }
+      catch (e) { provim = { ok: false, error: e.message }; }
+    }
+    res.json({ ok: true, perputhen, provim });
+  } catch (e) { njGabim(res, e); }
+});
+
+// Lista e njoftimeve. Filtra: statusi, burimi, rregulla (id).
+app.get('/api/njoftime', async (req, res) => {
+  try {
+    if (!(await njPrit(res))) return;
+    const q = req.query || {};
+    const statusi = NJ_STATUSET.includes(q.statusi) ? q.statusi : null;
+    const rid = parseInt(q.rregulla, 10);
+    const limit = Math.min(500, Math.max(1, parseInt(q.limit, 10) || 100));
+    const kushte = [], par = [];
+    if (statusi) { par.push(statusi); kushte.push(`COALESCE(statusi, 'i ri') = $${par.length}`); }
+    if (Number.isInteger(rid)) { par.push(rid); kushte.push('$' + par.length + ' = ANY(rregullat)'); }
+    par.push(limit);
+    const rows = (await pool.query(
+      'SELECT id, burimi, url, autori, teksti, publikuar, gjetur_at, rregullat, COALESCE(statusi, \'i ri\') AS statusi FROM njoftime_postime' +
+      (kushte.length ? ' WHERE ' + kushte.join(' AND ') : '') + ' ORDER BY gjetur_at DESC, id DESC LIMIT $' + par.length, par)).rows;
+    res.json({ ok: true, rows, numrat: await njNumrat() });
+  } catch (e) { njGabim(res, e); }
+});
+
+app.post('/api/njoftime/statusi', async (req, res) => {
+  try {
+    if (!(await njPrit(res))) return;
+    const b = req.body || {};
+    const id = parseInt(b.id, 10);
+    if (!Number.isInteger(id) || !NJ_STATUSET.includes(b.statusi)) return res.status(400).json({ error: 'Id ose status i pavlefshem.' });
+    const r = await pool.query('UPDATE njoftime_postime SET statusi = $1 WHERE id = $2', [b.statusi, id]);
+    res.json({ ok: true, ndryshuar: r.rowCount || 0 });
+  } catch (e) { njGabim(res, e); }
+});
+
 const PORT = process.env.PORT || 3000;
-const serveriHttp = app.listen(PORT, () => { console.log('Zbulim Bizneseh po punon ne portin ' + PORT); nisAlertePoll(); nisLancimePoll(); });
+const serveriHttp = app.listen(PORT, () => { console.log('Zbulim Bizneseh po punon ne portin ' + PORT); nisAlertePoll(); nisLancimePoll(); nisNjoftime(); });
 // Railway i mban lidhjet e lira hapur 60 s, ndersa Node i mbyll pas 5 s: nganjehere kerkesa dergohet ne nje lidhje qe sapo u mbyll dhe del "upstream error".
 // Lidhjet mbahen me gjate se 60 s qe ta mbylle Railway i pari.
 serveriHttp.keepAliveTimeout = 65000;
