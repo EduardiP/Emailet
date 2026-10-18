@@ -30,6 +30,7 @@ module.exports = function (app, pool) {
     ai_at TIMESTAMPTZ,
     UNIQUE (burimi, ext_id)
   )`)
+    .then(() => pool.query('ALTER TABLE komunitete_postime ADD COLUMN IF NOT EXISTS ai_arsye TEXT'))
     .then(() => pool.query('CREATE INDEX IF NOT EXISTS komunitete_postime_gjetur_idx ON komunitete_postime (gjetur_at DESC)'))
     .then(() => pool.query(`CREATE TABLE IF NOT EXISTS komunitete_gjendja (
     celesi TEXT PRIMARY KEY,
@@ -124,8 +125,11 @@ module.exports = function (app, pool) {
     }
     return d;
   }
+  // termi = null: merr TE GJITHA pyetjet e reja te faqes (pa filtrim me fjale), AI pastaj vendos cilat jane te pershtatshme.
   async function kerkoSE(termi, vendi, nga) {
-    const d = await seThirr('/search/advanced', { order: 'desc', sort: 'creation', q: termi, site: vendi, fromdate: String(nga), pagesize: '50', filter: 'withbody' });
+    const d = termi
+      ? await seThirr('/search/advanced', { order: 'desc', sort: 'creation', q: termi, site: vendi, fromdate: String(nga), pagesize: '50', filter: 'withbody' })
+      : await seThirr('/questions', { order: 'desc', sort: 'creation', site: vendi, fromdate: String(nga), pagesize: '100', filter: 'withbody' });
     return (Array.isArray(d.items) ? d.items : []).map(q => {
       const id = Number(q && q.question_id);
       if (!Number.isSafeInteger(id) || id <= 0) return null;
@@ -211,7 +215,8 @@ module.exports = function (app, pool) {
       'b = 1 if the author writes on behalf of a company or brand, or is advertising or selling something; b = 0 if the author is an individual person writing for themselves.\n' +
       'p = 0 to 100: how worthwhile it is to reply to this author and mention the product. High when the person describes a problem, need or question that the product solves, ' +
       'or asks for a tool, service or recommendation like it. Low when the post is unrelated, just news or opinion with no need, or already solved. If b = 1, p is at most 20.\n' +
-      'Return ONLY a JSON object with one entry per post number, like {"1":{"b":0,"p":80},"2":{"b":1,"p":5}}. No prose, no code fences.\n\n' +
+      'r = a short reason in Albanian, at most 15 words, saying why you gave that score (for example what need the person has, or why the post does not fit).\n' +
+      'Return ONLY a JSON object with one entry per post number, like {"1":{"b":0,"p":80,"r":"..."},"2":{"b":1,"p":5,"r":"..."}}. No prose, no code fences.\n\n' +
       'POSTS:\n' + lista;
     const r = await fetchKohe('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -232,7 +237,8 @@ module.exports = function (app, pool) {
       p = Number.isFinite(p) ? Math.max(0, Math.min(100, Math.round(p))) : null;
       const biznes = b === 1 ? true : (b === 0 ? false : null);
       if (biznes && p !== null) p = Math.min(p, 20);
-      return { id: row.id, biznes, p };
+      const arsye = x && typeof x === 'object' && typeof x.r === 'string' ? x.r.replace(/\s+/g, ' ').trim().slice(0, 200) : null;
+      return { id: row.id, biznes, p, arsye };
     });
   }
 
@@ -251,8 +257,8 @@ module.exports = function (app, pool) {
       const rez = await paralel(grupe.map(gr => ({ fn: () => vleresoGrup(gr, profili) })), 2);
       for (const x of rez) {
         if (!x.ok) { if (!gabim) gabim = pastroGabimin(x.e); continue; }
-        await pool.query('UPDATE komunitete_postime p SET ai_biznes = t.b, ai_pike = t.p, ai_at = now() FROM UNNEST($1::int[], $2::boolean[], $3::int[]) AS t(id, b, p) WHERE p.id = t.id',
-          [x.v.map(y => y.id), x.v.map(y => y.biznes), x.v.map(y => y.p)]);
+        await pool.query('UPDATE komunitete_postime p SET ai_biznes = t.b, ai_pike = t.p, ai_arsye = t.r, ai_at = now() FROM UNNEST($1::int[], $2::boolean[], $3::int[], $4::text[]) AS t(id, b, p, r) WHERE p.id = t.id',
+          [x.v.map(y => y.id), x.v.map(y => y.biznes), x.v.map(y => y.p), x.v.map(y => y.arsye)]);
         vleresuar += x.v.length;
       }
       if (!vleresuar && gabim) throw new Error(gabim);
@@ -299,7 +305,7 @@ module.exports = function (app, pool) {
       const b = req.body || {};
       const terma = pastroTermat(b.terma);
       if (!terma.length) return res.status(400).json({ error: 'Shkruaj te pakten nje term.' });
-      const meHN = !!b.hn, meSE = !!b.se;
+      const meHN = !!b.hn, meSE = !!b.se, seTeGjitha = !!b.se_te_gjitha;
       if (!meHN && !meSE) return res.status(400).json({ error: 'Zgjidh te pakten nje burim (Hacker News ose Stack Exchange).' });
       const vendet = pastroVendet(b.vendet);
       if (meSE && !vendet.length) return res.status(400).json({ error: 'Shkruaj te pakten nje faqe te Stack Exchange (p.sh. softwarerecs), ose hiq Stack Exchange.' });
@@ -315,7 +321,8 @@ module.exports = function (app, pool) {
         const nga = Math.floor(Date.now() / 1000) - dite * 86400;
         const punet = [];
         if (meHN) terma.forEach(t => punet.push({ termi: t, emri: 'Hacker News', fn: () => kerkoHN(t, nga) }));
-        if (meSE) terma.forEach(t => vendet.forEach(v => punet.push({ termi: t, emri: 'Stack Exchange ' + v, fn: () => kerkoSE(t, v, nga) })));
+        if (meSE && seTeGjitha) vendet.forEach(v => punet.push({ termi: '(te gjitha pyetjet e reja)', emri: 'Stack Exchange ' + v, fn: () => kerkoSE(null, v, nga) }));
+        else if (meSE) terma.forEach(t => vendet.forEach(v => punet.push({ termi: t, emri: 'Stack Exchange ' + v, fn: () => kerkoSE(t, v, nga) })));
         const rez = await paralel(punet, 4);
         const harta = new Map(), gabime = [], sipasBurimit = { hn: 0, se: 0 };
         rez.forEach((x, i) => {
@@ -358,7 +365,7 @@ module.exports = function (app, pool) {
       par.push(limit);
       const rendi = q.rendit === 'pike' ? 'ai_pike DESC NULLS LAST, publikuar DESC NULLS LAST, id DESC' : 'publikuar DESC NULLS LAST, id DESC';
       const rows = (await pool.query(
-        `SELECT id, burimi, url, autori, titulli, teksti, vendi, terma, publikuar, gjetur_at, COALESCE(statusi, 'i ri') AS statusi, ai_biznes, ai_pike, ai_at FROM komunitete_postime` +
+        `SELECT id, burimi, url, autori, titulli, teksti, vendi, terma, publikuar, gjetur_at, COALESCE(statusi, 'i ri') AS statusi, ai_biznes, ai_pike, ai_arsye, ai_at FROM komunitete_postime` +
         (kushte.length ? ' WHERE ' + kushte.join(' AND ') : '') + ' ORDER BY ' + rendi + ' LIMIT $' + par.length, par)).rows;
       const paVl = (await pool.query(`SELECT COUNT(*)::int AS n FROM komunitete_postime WHERE ai_at IS NULL AND COALESCE(statusi, 'i ri') = 'i ri'`)).rows[0].n;
       res.json({ ok: true, rows, numrat: await numrat(), pa_vleresuar: paVl });
