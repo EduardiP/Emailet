@@ -192,11 +192,15 @@
     var n = d.numrat || {};
     info.textContent = 'Te reja: ' + (n['i ri'] || 0) + ' | u pergjigj: ' + (n['u pergjigj'] || 0) + ' | e lashe: ' + (n['e lashe'] || 0) +
       ' | pa vleresuar nga AI: ' + (d.pa_vleresuar || 0) + ' | shfaqen: ' + d.rows.length;
-    shfaqListen(d.rows);
+    shfaqListen(d.rows, d.totali);
   }
 
-  function shfaqListen(rows) {
+  function shfaqListen(rows, totali) {
     var rez = el('komRez'); rez.innerHTML = '';
+    // Numri i postimeve qe perputhen me filtrin, i dukshem mbi tabele.
+    var n = typeof totali === 'number' ? totali : rows.length;
+    rez.appendChild(nje('div', n + (n === 1 ? ' postim' : ' postime') + ' me kete filter' + (n > rows.length ? ' (shfaqen ' + rows.length + ' te parat)' : ''),
+      'font-size:16px; font-weight:700; color:#3fb950; margin:6px 0 4px;'));
     if (!rows.length) { rez.appendChild(nje('div', 'Asnje postim me kete filter.', 'font-size:13px; color:#8b949e;')); return; }
     var tbl = document.createElement('table'), thead = document.createElement('thead'), hr = document.createElement('tr');
     ['Burimi', 'Postimi', 'Autori', 'AI', 'Koha', 'Statusi'].forEach(function (t) { hr.appendChild(nje('th', t)); });
