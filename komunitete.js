@@ -172,7 +172,7 @@ module.exports = function (app, pool) {
       if (!m) return null;
       const titulli = tekstNgaHtml(o.title || '').replace(/\s*[:\-|]\s*r\/[A-Za-z0-9_]+\s*$/i, '').replace(/\s*-\s*Reddit\s*$/i, '').slice(0, 300);
       const teksti = tekstNgaHtml(o.snippet || '') || titulli;
-      if (!teksti) return null;
+      if (!teksti || /^https?:\/\//i.test(titulli) || /no information is available/i.test(teksti)) return null; // faqe pa permbajtje te lexueshme
       return {
         burimi: 'reddit', ext_id: m[2].toLowerCase(), url: 'https://www.reddit.com/r/' + m[1] + '/comments/' + m[2] + '/', autori: null,
         titulli, teksti: teksti.slice(0, 1000), vendi: 'r/' + m[1], publikuar: kohaRelative(o.date)
@@ -526,7 +526,9 @@ module.exports = function (app, pool) {
         `SELECT id, burimi, url, autori, titulli, teksti, vendi, terma, publikuar, gjetur_at, COALESCE(statusi, 'i ri') AS statusi, ai_biznes, ai_pike, ai_arsye, ai_at FROM komunitete_postime` +
         (kushte.length ? ' WHERE ' + kushte.join(' AND ') : '') + ' ORDER BY ' + rendi + ' LIMIT $' + par.length, par)).rows;
       const paVl = (await pool.query(`SELECT COUNT(*)::int AS n FROM komunitete_postime WHERE ai_at IS NULL AND COALESCE(statusi, 'i ri') = 'i ri'`)).rows[0].n;
-      res.json({ ok: true, rows, numrat: await numrat(), pa_vleresuar: paVl });
+      // Sa postime perputhen me filtrin gjithsej (jo vetem sa shfaqen, qe kufizohen ne 200).
+      const totali = (await pool.query('SELECT COUNT(*)::int AS n FROM komunitete_postime' + (kushte.length ? ' WHERE ' + kushte.join(' AND ') : ''), par.slice(0, -1))).rows[0].n;
+      res.json({ ok: true, rows, totali, numrat: await numrat(), pa_vleresuar: paVl });
     } catch (e) { res.status(500).json({ error: pastroGabimin(e) }); }
   });
 
