@@ -41,6 +41,7 @@
     '<label class="bisChk"><input type="checkbox" id="komFPaBiznes" checked> Fshih bizneset (sipas AI)</label>',
     '<button id="komRifreskoBtn" class="njBtnGri">Rifresko</button>',
     '<button id="komVleresoBtn" class="njBtnGri">Vlereso te pavleresuarat</button>',
+    '<button id="komRivleresoBtn" class="njBtnGri">Rivlereso te gjitha</button>',
     '</div>',
     '<div id="komInfo" style="font-size:13px; color:#8b949e; margin-bottom:8px;"></div>',
     '<div id="komRez"></div>'
@@ -115,18 +116,23 @@
     vend.appendChild(kuti);
   }
 
-  // Vlereson ne grupe (40 per thirrje) derisa te mos mbetet asnje, maks. 10 thirrje.
+  // Vlereson ne grupe (20 per thirrje) derisa te mos mbetet asnje, maks. 25 thirrje; lista rifreskohet pas cdo thirrjeje.
   async function vleresoTeGjitha() {
-    var stat = el('komStat'), btn = el('komVleresoBtn'), gjithsej = 0;
+    var stat = el('komStat'), btn = el('komVleresoBtn'), gjithsej = 0, fillimi = Date.now();
     btn.disabled = true;
-    for (var i = 0; i < 10; i++) {
-      stat.textContent = 'AI po vlereson postimet (' + gjithsej + ' deri tani)...';
+    // Kohezgjatja shfaqet cdo sekonde, qe te duket qe vleresimi po punon.
+    var ora = setInterval(function () {
+      stat.textContent = 'AI po vlereson postimet: ' + gjithsej + ' te vleresuara deri tani (' + Math.round((Date.now() - fillimi) / 1000) + ' s)...';
+    }, 1000);
+    for (var i = 0; i < 25; i++) {
       var d = await post('/api/komunitete/vlereso').catch(function (e) { return { error: e.message }; });
-      if (d.error) { stat.textContent = 'Vleresimi: ' + d.error; break; }
-      if (d.duke) { stat.textContent = 'Nje vleresim po behet tashme.'; break; }
+      if (d.error) { clearInterval(ora); stat.textContent = 'Vleresimi: ' + d.error; break; }
+      if (d.duke) { clearInterval(ora); stat.textContent = 'Nje vleresim po behet tashme ne sfond. Prit pak dhe shtyp Rifresko.'; break; }
+      ngarkoListen();
       gjithsej += d.vleresuar || 0;
-      if (!d.vleresuar || !d.mbetur) { stat.textContent = 'U vleresuan ' + gjithsej + ' postime.' + (d.mbetur ? ' Mbeten ' + d.mbetur + '.' : '') + (d.gabim ? ' Disa deshtuan: ' + d.gabim : ''); break; }
+      if (!d.vleresuar || !d.mbetur) { clearInterval(ora); stat.textContent = 'U vleresuan ' + gjithsej + ' postime.' + (d.mbetur ? ' Mbeten ' + d.mbetur + '.' : '') + (d.gabim ? ' Disa deshtuan: ' + d.gabim : ''); break; }
     }
+    clearInterval(ora);
     btn.disabled = false;
     await ngarkoListen();
   }
@@ -225,6 +231,14 @@
   el('komVendetBtn').onclick = shfaqVendet;
   el('komRifreskoBtn').onclick = ngarkoListen;
   el('komVleresoBtn').onclick = vleresoTeGjitha;
+  // Rivleresimi: per postimet "Te reja" fshin pikët e vjetra dhe i vlereson serish me pershkrimin aktual te produktit.
+  el('komRivleresoBtn').onclick = async function () {
+    if (!window.confirm('Te vleresohen serish te gjitha postimet "Te reja"? Pikët e vjetra zevendesohen.')) { return; }
+    var d = await post('/api/komunitete/rivlereso', { profili: el('komProfili').value }).catch(function (e) { return { error: e.message }; });
+    if (d.error) { el('komStat').textContent = 'Gabim: ' + d.error; return; }
+    el('komStat').textContent = d.rivendosur + ' postime do te vleresohen serish...';
+    await vleresoTeGjitha();
+  };
   ['komFStatusi', 'komFBurimi', 'komFMin', 'komFRendi', 'komFPaBiznes'].forEach(function (id) { el(id).onchange = ngarkoListen; });
 
   // Lidhja me tab-et ekzistuese: funksioni i vjeter ndryshoTab fsheh/shfaq tab-et e tjera; ky shton tab-in Komunitete.
