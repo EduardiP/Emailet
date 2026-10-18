@@ -17,6 +17,7 @@
     '<div style="font-size:13px; margin-bottom:6px;">1. Produkti (AI e perdor per vleresimin)</div>',
     '<textarea id="komProfili" rows="3" placeholder="p.sh. Mjet online qe u dergon automatikisht kujtesa klienteve te parukerive per takimet"></textarea>',
     '<div style="font-size:13px; margin:14px 0 6px;">2. Termat: nje per rresht, maksimumi 8. Fraza te shkurtra, si i shkruan nje person qe ka problemin (2 deri 5 fjale).</div>',
+    '<div class="row" style="align-items:center;"><select id="komSaktesia"><option value="e-sakte" selected>Kerkim i sakte (per fillim): termi fjale per fjale</option><option value="e-gjere">Kerkim i gjere (per cdo dite): fjalet mund te jene kudo</option></select></div>',
     '<div class="row"><button id="komTermaAiBtn" class="njBtnGri">Formulo termat me AI (nga pershkrimi)</button><span id="komTermaStat" style="font-size:13px; color:#8b949e; align-self:center;"></span></div>',
     '<textarea id="komTerma" rows="4" placeholder="appointment reminder app&#10;clients forget appointments&#10;alternative to calendly"></textarea>',
     '<div style="font-size:13px; margin:14px 0 6px;">3. Ku te kerkohet</div>',
@@ -40,7 +41,7 @@
     '<div class="row" style="align-items:center;">',
     '<select id="komFStatusi"><option value="i ri">Te reja</option><option value="u pergjigj">U pergjigj</option><option value="e lashe">E lashe</option><option value="">Te gjitha</option></select>',
     '<select id="komFBurimi"><option value="">Te gjitha burimet</option><option value="hn">Hacker News</option><option value="se">Stack Exchange</option><option value="reddit">Reddit</option></select>',
-    '<select id="komFMin"><option value="0">Cdo pike</option><option value="40">Pike 40+</option><option value="60">Pike 60+</option><option value="80">Pike 80+</option></select>',
+    '<select id="komFMin"><option value="0">Cdo pike</option><option value="40">Pike 40+</option><option value="60" selected>Pike 60+ (vetem te mirat)</option><option value="80">Pike 80+</option></select>',
     '<select id="komFRendi"><option value="pike">Sipas pikeve te AI</option><option value="">Me te rejat fillimisht</option></select>',
     '<label class="bisChk"><input type="checkbox" id="komFPaBiznes" checked> Fshih bizneset (sipas AI)</label>',
     '<button id="komRifreskoBtn" class="njBtnGri">Rifresko</button>',
@@ -95,6 +96,7 @@
     el('komSubreddite').value = (d.subreddite || []).join(', ');
     if (!d.ka_serper) { el('komRD').checked = false; el('komSubStat').textContent = 'SERPER_API_KEY mungon te Railway: Reddit nuk punon pa te.'; }
     el('komDite').value = String(d.dite || 7);
+    el('komSaktesia').value = d.saktesia === 'e-gjere' ? 'e-gjere' : 'e-sakte';
     kaCelesSE = !!d.ka_celes_se;
     shfaqKuoten(d.kuota, kaCelesSE);
     if (!d.ka_openai) { el('komInfo').textContent = 'OPENAI_API_KEY mungon: postimet ruhen, por nuk vleresohen.'; }
@@ -158,7 +160,7 @@
     var d = await post('/api/komunitete/kerko', {
       profili: el('komProfili').value, terma: terma, vendet: vendet, dite: Number(el('komDite').value),
       hn: el('komHN').checked, se: el('komSE').checked, se_te_gjitha: el('komSETeGjitha').checked,
-      reddit: el('komRD').checked, subreddite: subreddite
+      reddit: el('komRD').checked, subreddite: subreddite, saktesia: el('komSaktesia').value
     }).catch(function (e) { return { error: e.message }; });
     btn.disabled = false;
     if (d.error) { stat.textContent = 'Gabim: ' + d.error; return; }
@@ -225,7 +227,7 @@
         if (k.ai_arsye) { tdA.appendChild(nje('div', k.ai_arsye, 'font-size:11px; color:#8b949e; max-width:200px; margin-top:3px;')); }
       } else { tdA.appendChild(nje('span', '-', 'color:#6e7681;')); }
       tr.appendChild(tdA);
-      var tdT = nje('td', para(k.publikuar || k.gjetur_at), 'white-space:nowrap; font-size:12px;');
+      var tdT = nje('td', k.publikuar ? para(k.publikuar) : ('gjetur ' + para(k.gjetur_at)), 'white-space:nowrap; font-size:12px;');
       tdT.title = String(k.publikuar || k.gjetur_at || '').slice(0, 16).replace('T', ' ');
       tr.appendChild(tdT);
       var tdS = document.createElement('td'), sel = document.createElement('select');
@@ -244,7 +246,7 @@
   el('komTermaAiBtn').onclick = async function () {
     var st = el('komTermaStat'), b = el('komTermaAiBtn');
     b.disabled = true; st.textContent = 'AI po formulon termat...';
-    var d = await post('/api/komunitete/terma-ai', { profili: el('komProfili').value }).catch(function (e) { return { error: e.message }; });
+    var d = await post('/api/komunitete/terma-ai', { profili: el('komProfili').value, saktesia: el('komSaktesia').value }).catch(function (e) { return { error: e.message }; });
     b.disabled = false;
     if (d.error) { st.textContent = 'Gabim: ' + d.error; return; }
     el('komTerma').value = d.terma.join('\n');
