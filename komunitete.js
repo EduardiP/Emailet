@@ -218,12 +218,20 @@ module.exports = function (app, pool) {
       'r = a short reason in Albanian, at most 15 words, saying why you gave that score (for example what need the person has, or why the post does not fit).\n' +
       'Return ONLY a JSON object with one entry per post number, like {"1":{"b":0,"p":80,"r":"..."},"2":{"b":1,"p":5,"r":"..."}}. No prose, no code fences.\n\n' +
       'POSTS:\n' + lista;
-    const r = await fetchKohe('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + OPENAI_KEY },
-      body: JSON.stringify({ model: MODELI, messages: [{ role: 'user', content: prompt }] })
-    }, 90000);
-    const data = await r.json().catch(() => ({}));
+    // reasoning_effort "minimal": modeli nuk "mendon" gjate para pergjigjes, keshtu vleresimi behet ne disa sekonda ne vend te minutave.
+    // Nese OpenAI nuk e pranon kete parameter, provohet serish pa te.
+    const thirr = async meMinimal => {
+      const trupi = { model: MODELI, messages: [{ role: 'user', content: prompt }] };
+      if (meMinimal) trupi.reasoning_effort = 'minimal';
+      const r = await fetchKohe('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + OPENAI_KEY },
+        body: JSON.stringify(trupi)
+      }, 60000);
+      return { r, data: await r.json().catch(() => ({})) };
+    };
+    let { r, data } = await thirr(true);
+    if (r.status === 400 && /reasoning/i.test(JSON.stringify(data))) ({ r, data } = await thirr(false));
     if (!r.ok) throw new Error('OpenAI: ' + ((data.error && data.error.message) || r.status));
     const tekst = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
     const i = tekst.indexOf('{'), j = tekst.lastIndexOf('}');
@@ -252,9 +260,9 @@ module.exports = function (app, pool) {
       if (!profili) throw new Error('Shkruaj pershkrimin e produktit (pika 1) dhe kerko serish, qe AI te dije cfare te vleresoje.');
       const rows = (await pool.query(`SELECT id, titulli, teksti FROM komunitete_postime WHERE ai_at IS NULL AND COALESCE(statusi, 'i ri') = 'i ri' ORDER BY gjetur_at DESC, id DESC LIMIT $1`, [maks])).rows;
       const grupe = [];
-      for (let i = 0; i < rows.length; i += 20) grupe.push(rows.slice(i, i + 20));
+      for (let i = 0; i < rows.length; i += 10) grupe.push(rows.slice(i, i + 10)); // grupe te vogla = pergjigje me te shpejta
       let vleresuar = 0, gabim = null;
-      const rez = await paralel(grupe.map(gr => ({ fn: () => vleresoGrup(gr, profili) })), 2);
+      const rez = await paralel(grupe.map(gr => ({ fn: () => vleresoGrup(gr, profili) })), 4);
       for (const x of rez) {
         if (!x.ok) { if (!gabim) gabim = pastroGabimin(x.e); continue; }
         await pool.query('UPDATE komunitete_postime p SET ai_biznes = t.b, ai_pike = t.p, ai_arsye = t.r, ai_at = now() FROM UNNEST($1::int[], $2::boolean[], $3::int[], $4::text[]) AS t(id, b, p, r) WHERE p.id = t.id',
@@ -346,8 +354,20 @@ module.exports = function (app, pool) {
     try {
       if (!(await prit(res))) return;
       if (!OPENAI_KEY) return res.status(400).json({ error: 'OPENAI_API_KEY mungon te Railway, Variables.' });
-      res.json(Object.assign({ ok: true }, await vleresoPaVleresuara(40)));
+      res.json(Object.assign({ ok: true }, await vleresoPaVleresuara(20)));
     } catch (e) { res.status(502).json({ error: pastroGabimin(e) }); }
+  });
+
+  // Fshin vleresimet e postimeve "i ri" qe te vleresohen serish (p.sh. pasi ndryshon pershkrimi i produktit).
+  app.post('/api/komunitete/rivlereso', async (req, res) => {
+    try {
+      if (!(await prit(res))) return;
+      if (vleresimDuke) return res.status(409).json({ error: 'Nje vleresim po behet tashme. Prit sa te perfundoje.' });
+      const profili = String((req.body || {}).profili || '').replace(/\u0000/g, '').trim().slice(0, 2000);
+      if (profili) await ruajGjendjen('profili', profili); // vleresimi i ri perdor pershkrimin qe eshte tani ne faqe
+      const r = await pool.query(`UPDATE komunitete_postime SET ai_at = NULL, ai_pike = NULL, ai_biznes = NULL, ai_arsye = NULL WHERE COALESCE(statusi, 'i ri') = 'i ri'`);
+      res.json({ ok: true, rivendosur: r.rowCount || 0 });
+    } catch (e) { res.status(500).json({ error: pastroGabimin(e) }); }
   });
 
   // Lista. Filtra: statusi, burimi (hn | se), min (pike minimale), pa_biznes=1, rendit=pike.
