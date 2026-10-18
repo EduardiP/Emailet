@@ -11,6 +11,8 @@ const OPENAI_KEY = process.env.OPENAI_API_KEY;
 const GENERECT_KEY = process.env.GENERECT_API_KEY;
 const SERPER_KEY = process.env.SERPER_API_KEY;
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+// Seksioni "Komunitete" (Hacker News + Stack Exchange): rruget dhe tabelat jane te komunitete.js, faqja te komunitete-client.js.
+require('./komunitete')(app, pool);
 
 pool.query(`CREATE TABLE IF NOT EXISTS bizneset_gjetur (
   id SERIAL PRIMARY KEY,
@@ -3858,6 +3860,7 @@ function esc(s){ return String(s||'').replace(/[&<>"']/g, function(c){ return ({
   }catch(e){}
 })();
 </script>
+<script src="/komunitete-client.js"></script>
 </body></html>`);
 });
 
