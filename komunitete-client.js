@@ -11,14 +11,18 @@
   var panel = document.createElement('div');
   panel.className = 'sec-panel'; panel.id = 'panelKomunitete';
   panel.innerHTML = [
-    '<p class="mut">Kerkon termat ne Hacker News (postime dhe komente) dhe ne faqet e Stack Exchange (pyetje). Te dyja jane publike dhe falas. ',
+    '<p class="mut">Kerkon termat ne Reddit (permes Google/Serper, rreth 1 kredit per kerkese), Hacker News (postime dhe komente) dhe Stack Exchange (pyetje); dy te fundit jane falas. ',
     'Postimet ruhen dhe AI i vlereson: a i ka shkruar nje individ apo nje biznes, dhe sa ia vlen te pergjigjesh (0 deri 100). ',
     'Asgje nuk i dergohet askujt: ti hap postimin dhe pergjigjesh vete.</p>',
     '<div style="font-size:13px; margin-bottom:6px;">1. Produkti (AI e perdor per vleresimin)</div>',
     '<textarea id="komProfili" rows="3" placeholder="p.sh. Mjet online qe u dergon automatikisht kujtesa klienteve te parukerive per takimet"></textarea>',
-    '<div style="font-size:13px; margin:14px 0 6px;">2. Termat: nje per rresht, maksimumi 8. Fraza te shkurtra, si i shkruajne njerezit (2 deri 4 fjale jep me shume rezultate).</div>',
+    '<div style="font-size:13px; margin:14px 0 6px;">2. Termat: nje per rresht, maksimumi 8. Fraza te shkurtra, si i shkruan nje person qe ka problemin (2 deri 5 fjale).</div>',
+    '<div class="row"><button id="komTermaAiBtn" class="njBtnGri">Formulo termat me AI (nga pershkrimi)</button><span id="komTermaStat" style="font-size:13px; color:#8b949e; align-self:center;"></span></div>',
     '<textarea id="komTerma" rows="4" placeholder="appointment reminder app&#10;clients forget appointments&#10;alternative to calendly"></textarea>',
     '<div style="font-size:13px; margin:14px 0 6px;">3. Ku te kerkohet</div>',
+    '<label class="bisChk"><input type="checkbox" id="komRD" checked> Reddit (permes Serper)</label>',
+    '<input type="text" id="komSubreddite" placeholder="Subreddit-et, te ndara me presje (maks. 12), p.sh. freelance, smallbusiness. Bosh = gjithe Reddit" style="width:100%; box-sizing:border-box; margin:6px 0;">',
+    '<div class="row"><button id="komSubAiBtn" class="njBtnGri">Propozo subreddit-e me AI</button><span id="komSubStat" style="font-size:13px; color:#8b949e; align-self:center;"></span></div>',
     '<label class="bisChk"><input type="checkbox" id="komHN" checked> Hacker News</label>',
     '<label class="bisChk"><input type="checkbox" id="komSE" checked> Stack Exchange</label>',
     '<label class="bisChk"><input type="checkbox" id="komSETeGjitha" checked> Stack Exchange: merr te gjitha pyetjet e reja te faqeve, pa terma (AI zgjedh cilat ia vlejne)</label>',
@@ -35,7 +39,7 @@
     '<div style="border-top:1px solid #2a313c; margin:16px 0;"></div>',
     '<div class="row" style="align-items:center;">',
     '<select id="komFStatusi"><option value="i ri">Te reja</option><option value="u pergjigj">U pergjigj</option><option value="e lashe">E lashe</option><option value="">Te gjitha</option></select>',
-    '<select id="komFBurimi"><option value="">Te gjitha burimet</option><option value="hn">Hacker News</option><option value="se">Stack Exchange</option></select>',
+    '<select id="komFBurimi"><option value="">Te gjitha burimet</option><option value="hn">Hacker News</option><option value="se">Stack Exchange</option><option value="reddit">Reddit</option></select>',
     '<select id="komFMin"><option value="0">Cdo pike</option><option value="40">Pike 40+</option><option value="60">Pike 60+</option><option value="80">Pike 80+</option></select>',
     '<select id="komFRendi"><option value="pike">Sipas pikeve te AI</option><option value="">Me te rejat fillimisht</option></select>',
     '<label class="bisChk"><input type="checkbox" id="komFPaBiznes" checked> Fshih bizneset (sipas AI)</label>',
@@ -88,6 +92,8 @@
     el('komProfili').value = d.profili || '';
     el('komTerma').value = (d.terma || []).join('\n');
     el('komVendet').value = (d.vendet || []).join(', ');
+    el('komSubreddite').value = (d.subreddite || []).join(', ');
+    if (!d.ka_serper) { el('komRD').checked = false; el('komSubStat').textContent = 'SERPER_API_KEY mungon te Railway: Reddit nuk punon pa te.'; }
     el('komDite').value = String(d.dite || 7);
     kaCelesSE = !!d.ka_celes_se;
     shfaqKuoten(d.kuota, kaCelesSE);
@@ -143,15 +149,21 @@
     if (!terma.length) { stat.textContent = 'Shkruaj te pakten nje term.'; return; }
     if (terma.length > 8) { stat.textContent = 'Maksimumi 8 terma per kerkim.'; return; }
     var vendet = el('komVendet').value.split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+    var subreddite = el('komSubreddite').value.split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+    if (el('komRD').checked) {
+      var kerkesaRD = terma.length * Math.max(1, Math.ceil(subreddite.length / 6));
+      if (!window.confirm('Reddit do te perdore rreth ' + kerkesaRD + ' kredite Serper. Vazhdo?')) { return; }
+    }
     btn.disabled = true; el('komGabime').textContent = ''; stat.textContent = 'Po kerkoj (mund te marre disa sekonda)...';
     var d = await post('/api/komunitete/kerko', {
       profili: el('komProfili').value, terma: terma, vendet: vendet, dite: Number(el('komDite').value),
-      hn: el('komHN').checked, se: el('komSE').checked, se_te_gjitha: el('komSETeGjitha').checked
+      hn: el('komHN').checked, se: el('komSE').checked, se_te_gjitha: el('komSETeGjitha').checked,
+      reddit: el('komRD').checked, subreddite: subreddite
     }).catch(function (e) { return { error: e.message }; });
     btn.disabled = false;
     if (d.error) { stat.textContent = 'Gabim: ' + d.error; return; }
     shfaqKuoten(d.kuota, kaCelesSE);
-    stat.textContent = d.kerkesa + ' kerkesa | u gjeten ' + d.gjetur + ' postime (Hacker News: ' + d.hn + ', Stack Exchange: ' + d.se + ') | te reja: ' + d.te_reja + '.';
+    stat.textContent = d.kerkesa + ' kerkesa | u gjeten ' + d.gjetur + ' postime (Reddit: ' + (d.reddit || 0) + ', Hacker News: ' + d.hn + ', Stack Exchange: ' + d.se + ') | te reja: ' + d.te_reja + '.';
     if (d.gabime && d.gabime.length) { el('komGabime').textContent = 'Disa kerkesa deshtuan: ' + d.gabime.join(' | '); }
     el('komFStatusi').value = 'i ri';
     await ngarkoListen();
@@ -191,7 +203,7 @@
     rows.forEach(function (k) {
       var tr = document.createElement('tr');
       var tdB = nje('td', null, 'font-size:12px; white-space:nowrap;');
-      tdB.appendChild(nje('div', k.burimi === 'hn' ? 'Hacker News' : 'Stack Exchange'));
+      tdB.appendChild(nje('div', k.burimi === 'hn' ? 'Hacker News' : (k.burimi === 'reddit' ? 'Reddit' : 'Stack Exchange')));
       if (k.vendi) { tdB.appendChild(nje('div', k.vendi, 'color:#8b949e;')); }
       tr.appendChild(tdB);
       var tdP = nje('td', null, 'max-width:560px;');
@@ -228,6 +240,25 @@
   }
 
   el('komKerkoBtn').onclick = kerko;
+  // AI: termat (si shkruan nje person) dhe subreddit-et (ku rrine individet), te dyja nga pershkrimi i produktit.
+  el('komTermaAiBtn').onclick = async function () {
+    var st = el('komTermaStat'), b = el('komTermaAiBtn');
+    b.disabled = true; st.textContent = 'AI po formulon termat...';
+    var d = await post('/api/komunitete/terma-ai', { profili: el('komProfili').value }).catch(function (e) { return { error: e.message }; });
+    b.disabled = false;
+    if (d.error) { st.textContent = 'Gabim: ' + d.error; return; }
+    el('komTerma').value = d.terma.join('\n');
+    st.textContent = d.terma.length + ' terma. Shikoji dhe ndryshoji nese duhet.';
+  };
+  el('komSubAiBtn').onclick = async function () {
+    var st = el('komSubStat'), b = el('komSubAiBtn');
+    b.disabled = true; st.textContent = 'AI po kerkon subreddit-e...';
+    var d = await post('/api/komunitete/subreddite-ai', { profili: el('komProfili').value }).catch(function (e) { return { error: e.message }; });
+    b.disabled = false;
+    if (d.error) { st.textContent = 'Gabim: ' + d.error; return; }
+    el('komSubreddite').value = d.subreddite.join(', ');
+    st.textContent = d.subreddite.length + ' subreddit-e. Hiq ato qe nuk te duken te pershtatshme.';
+  };
   el('komVendetBtn').onclick = shfaqVendet;
   el('komRifreskoBtn').onclick = ngarkoListen;
   el('komVleresoBtn').onclick = vleresoTeGjitha;
