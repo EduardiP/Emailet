@@ -21,6 +21,7 @@
     '<div style="font-size:13px; margin:14px 0 6px;">3. Ku te kerkohet</div>',
     '<label class="bisChk"><input type="checkbox" id="komHN" checked> Hacker News</label>',
     '<label class="bisChk"><input type="checkbox" id="komSE" checked> Stack Exchange</label>',
+    '<label class="bisChk"><input type="checkbox" id="komSETeGjitha" checked> Stack Exchange: merr te gjitha pyetjet e reja te faqeve, pa terma (AI zgjedh cilat ia vlejne)</label>',
     '<input type="text" id="komVendet" placeholder="Faqet e Stack Exchange, te ndara me presje (maks. 5), p.sh. softwarerecs, webapps, superuser" style="width:100%; box-sizing:border-box; margin:6px 0;">',
     '<div class="row"><button id="komVendetBtn" class="njBtnGri">Shfaq te gjitha faqet e Stack Exchange</button></div>',
     '<div id="komVendetLista" style="margin-bottom:10px;"></div>',
@@ -139,7 +140,7 @@
     btn.disabled = true; el('komGabime').textContent = ''; stat.textContent = 'Po kerkoj (mund te marre disa sekonda)...';
     var d = await post('/api/komunitete/kerko', {
       profili: el('komProfili').value, terma: terma, vendet: vendet, dite: Number(el('komDite').value),
-      hn: el('komHN').checked, se: el('komSE').checked
+      hn: el('komHN').checked, se: el('komSE').checked, se_te_gjitha: el('komSETeGjitha').checked
     }).catch(function (e) { return { error: e.message }; });
     btn.disabled = false;
     if (d.error) { stat.textContent = 'Gabim: ' + d.error; return; }
@@ -197,12 +198,13 @@
       if (k.terma && k.terma.length) { tdP.appendChild(nje('div', 'Termat: ' + k.terma.join(', '), 'font-size:11px; color:#6e7681; margin-top:3px;')); }
       tr.appendChild(tdP);
       tr.appendChild(nje('td', k.autori || '', 'font-size:12px; word-break:break-all; max-width:130px;'));
-      var tdA = nje('td', null, 'min-width:90px;');
+      var tdA = nje('td', null, 'min-width:120px;');
       if (k.ai_at) {
         var et = nje('span', k.ai_biznes === true ? 'Biznes' : (k.ai_biznes === false ? 'Individ' : '?'));
         et.className = 'njAI ' + (k.ai_biznes === true ? 'l4' : (k.ai_pike >= 60 ? 'l1' : (k.ai_pike >= 40 ? 'l2' : 'l5')));
         tdA.appendChild(et);
         if (k.ai_pike !== null && k.ai_pike !== undefined) { tdA.appendChild(nje('div', k.ai_pike + ' / 100', 'font-size:12px; color:#8b949e;')); }
+        if (k.ai_arsye) { tdA.appendChild(nje('div', k.ai_arsye, 'font-size:11px; color:#8b949e; max-width:200px; margin-top:3px;')); }
       } else { tdA.appendChild(nje('span', '-', 'color:#6e7681;')); }
       tr.appendChild(tdA);
       var tdT = nje('td', para(k.publikuar || k.gjetur_at), 'white-space:nowrap; font-size:12px;');
