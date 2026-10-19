@@ -1,5 +1,5 @@
-// KONTEKSTI: plani i plote i kerkimit (Reddit permes Google: SearXNG + Serper, versioni falas, 7 terma, cikli javor, radha 24-oreshe,
-// burimet e ardhshme) eshte te PLANI-KERKIMI.md ne te njejtin folder. Lexoje para se ta ndryshosh kete skedar.
+// KONTEKSTI: plani i plote i kerkimit (Reddit permes Google me Serper, versioni falas, 7 terma, kerkimi fillestar 6 muaj,
+// cikli ditor 1 term ne dite, burimet e ardhshme) eshte te PLANI-KERKIMI.md ne te njejtin folder. Lexoje para se ta ndryshosh kete skedar.
 // Seksioni "Komunitete": kerkon termat ne Hacker News (Algolia, falas, pa celes) dhe ne faqet e Stack Exchange (API publike, falas).
 // Postimet ruhen te komunitete_postime dhe AI (gpt-5-nano) i vlereson: individ apo biznes, dhe sa ia vlen t'i pergjigjesh (0-100).
 // Variabla te Railway: STACKEXCHANGE_KEY (opsionale, por e keshillueshme: pa te 300 kerkesa ne dite, me te 10,000), OPENAI_API_KEY (ekziston tashme).
@@ -12,7 +12,7 @@ module.exports = function (app, pool) {
   const SERPER_KEY = String(process.env.SERPER_API_KEY || '').trim(); // per Reddit (kerkim ne Google permes Serper, rreth 1 kredit per kerkese)
   const MAKS_SUBREDDITE = 12, SUBREDDIT_PER_KERKESE = 6;
   const MODELI = 'gpt-5-nano';
-  const MAKS_TERMA = 8, MAKS_VENDE = 5;
+  const MAKS_TERMA = 7, MAKS_VENDE = 5; // 7 terma = 7 dite te javes (cikli ditor)
   const DITET = [1, 7, 30];
   const STATUSET = ['i ri', 'u pergjigj', 'e lashe'];
 
@@ -160,15 +160,39 @@ module.exports = function (app, pool) {
     const d = Date.parse(t);
     return Number.isFinite(d) ? new Date(d).toISOString() : null;
   }
-  async function kerkoReddit(termi, subreddite, dite, sakte) {
+  // Periudha per Google (parametri tbs): 'qdr:d' 24 ore, 'qdr:w' java, 'qdr:m' muaji; 6 muaj = interval me data (cdr).
+  function tbsMuaj(muaj) {
+    const f = d => (d.getUTCMonth() + 1) + '/' + d.getUTCDate() + '/' + d.getUTCFullYear();
+    const tani = new Date(), nga = new Date(tani.getTime());
+    nga.setUTCMonth(nga.getUTCMonth() - muaj);
+    return 'cdr:1,cd_min:' + f(nga) + ',cd_max:' + f(tani);
+  }
+  let krediteKetuNisje = 0; // kreditet Serper qe nga nisja e serverit (totali ruhet ne databaze: serper_kredite)
+  async function shtoKredite(n) {
+    krediteKetuNisje += n;
+    await pool.query(`INSERT INTO komunitete_gjendja (celesi, vlera, perditesuar) VALUES ('serper_kredite', $1, now())
+      ON CONFLICT (celesi) DO UPDATE SET vlera = (COALESCE(NULLIF(komunitete_gjendja.vlera, ''), '0')::int + $1::int)::text, perditesuar = now()`, [String(n)]).catch(() => {});
+  }
+  // qBaze: termi (ose disa terma me OR), pa site:. Kthen { postime, numri } ku numri = sa rezultate ktheu Google ne kete faqe (para filtrimit).
+  async function kerkoRedditFaqe(qBaze, subreddite, tbs, faqja) {
     const vendi = subreddite.length ? '(' + subreddite.map(x => 'site:reddit.com/r/' + x).join(' OR ') + ')' : 'site:reddit.com';
-    const trupi = { q: (sakte ? '"' + termi.replace(/"/g, '') + '"' : termi) + ' ' + vendi, num: 10, tbs: 'qdr:' + (dite <= 1 ? 'd' : (dite <= 7 ? 'w' : 'm')) };
+    const trupi = { q: qBaze + ' ' + vendi, num: 10, tbs };
+    if (faqja > 1) trupi.page = faqja;
     const r = await fetchKohe('https://google.serper.dev/search', {
       method: 'POST', headers: { 'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json' }, body: JSON.stringify(trupi)
     }, 30000);
     const d = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error('Serper: ' + (d.message || ('HTTP ' + r.status)));
-    return (Array.isArray(d.organic) ? d.organic : []).map(o => {
+    await shtoKredite(1);
+    const organic = Array.isArray(d.organic) ? d.organic : [];
+    return { numri: organic.length, postime: postimeNgaOrganic(organic) };
+  }
+  async function kerkoReddit(termi, subreddite, dite, sakte) {
+    const tbs = 'qdr:' + (dite <= 1 ? 'd' : (dite <= 7 ? 'w' : 'm'));
+    return (await kerkoRedditFaqe(sakte ? '"' + termi.replace(/"/g, '') + '"' : termi, subreddite, tbs, 1)).postime;
+  }
+  function postimeNgaOrganic(organic) {
+    return organic.map(o => {
       // Vetem postimet (/r/<sub>/comments/<id>/...); faqet e subreddit-eve, profilet etj. anashkalohen.
       const m = String(o.link || '').match(/^https?:\/\/(?:www\.|old\.|new\.)?reddit\.com\/r\/([A-Za-z0-9_]{2,21})\/comments\/([a-z0-9]{3,12})(?:\/|$)/i);
       if (!m) return null;
@@ -258,8 +282,10 @@ module.exports = function (app, pool) {
   }
 
   // Ruan postimet (nje rresht per postim); nese postimi ekziston, i shtohen vetem termat e rinj. Kthen sa ishin vertet te reja.
-  async function ruajPostimet(lista) {
-    if (!lista.length) return 0;
+  async function ruajPostimet(lista) { return (await ruajPostimetId(lista)).length; }
+  // Si ruajPostimet, por kthen id-te e postimeve vertet te reja (qe te vleresohen menjehere).
+  async function ruajPostimetId(lista) {
+    if (!lista.length) return [];
     const k = { b: [], e: [], u: [], a: [], t: [], x: [], v: [], te: [], p: [] };
     lista.forEach(r => {
       k.b.push(r.burimi); k.e.push(r.ext_id); k.u.push(r.url || null); k.a.push(r.autori || null); k.t.push(r.titulli || '');
@@ -270,9 +296,9 @@ module.exports = function (app, pool) {
        SELECT t.b, t.e, t.u, t.a, t.t, t.x, t.v, ARRAY(SELECT jsonb_array_elements_text(t.te::jsonb)), t.p::timestamptz
        FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[]) AS t(b, e, u, a, t, x, v, te, p)
        ON CONFLICT (burimi, ext_id) DO UPDATE SET terma = ARRAY(SELECT DISTINCT y FROM unnest(komunitete_postime.terma || EXCLUDED.terma) AS y)
-       RETURNING (xmax = 0) AS i_ri`,
+       RETURNING id, (xmax = 0) AS i_ri`,
       [k.b, k.e, k.u, k.a, k.t, k.x, k.v, k.te, k.p]);
-    return r.rows.filter(x => x.i_ri).length;
+    return r.rows.filter(x => x.i_ri).map(x => x.id);
   }
 
   // ---- Vleresimi me AI: individ apo biznes, dhe pike 0-100 ----
@@ -369,6 +395,113 @@ module.exports = function (app, pool) {
     } finally { vleresimDuke = false; }
   }
 
+  // Vlereson menjehere postimet me keto id dhe kthen vleresimet ({ id, biznes, p, arsye }).
+  async function vleresoIds(ids, profili) {
+    if (!ids.length || !OPENAI_KEY) return [];
+    const rows = (await pool.query('SELECT id, titulli, teksti FROM komunitete_postime WHERE id = ANY($1::int[])', [ids])).rows;
+    const grupe = [];
+    for (let i = 0; i < rows.length; i += 10) grupe.push(rows.slice(i, i + 10));
+    const dalja = [];
+    for (const x of await paralel(grupe.map(gr => ({ fn: () => vleresoGrup(gr, profili) })), 4)) {
+      if (!x.ok) continue; // ato qe deshtojne mbeten pa vleresim; butoni "Vlereso te pavleresuarat" i kap me vone
+      await pool.query('UPDATE komunitete_postime p SET ai_biznes = t.b, ai_pike = t.p, ai_arsye = t.r, ai_at = now() FROM UNNEST($1::int[], $2::boolean[], $3::int[], $4::text[]) AS t(id, b, p, r) WHERE p.id = t.id',
+        [x.v.map(y => y.id), x.v.map(y => y.biznes), x.v.map(y => y.p), x.v.map(y => y.arsye)]);
+      dalja.push(...x.v);
+    }
+    return dalja;
+  }
+  const PIKE_E_MIRE = 60, MIN_TE_MIRA_PER_FAQE = 3, MAKS_FAQE_FILLESTARE = 4, MUAJ_FILLESTARE = 6;
+  const eMire = v => v && v.biznes === false && Number(v.p) >= PIKE_E_MIRE;
+  function grupetSubreddite(subreddite) {
+    const g = [];
+    for (let i = 0; i < Math.max(1, subreddite.length); i += SUBREDDIT_PER_KERKESE) g.push(subreddite.slice(i, i + SUBREDDIT_PER_KERKESE));
+    return g;
+  }
+  // Nje faqe Reddit: kerkon, ruan, vlereson te rejat. Kthen { numri, te_reja, te_mira }.
+  async function faqeReddit(qBaze, etiketa, subreddite, tbs, faqja, profili) {
+    const { numri, postime } = await kerkoRedditFaqe(qBaze, subreddite, tbs, faqja);
+    postime.forEach(p => { p.terma = [etiketa]; });
+    const ids = await ruajPostimetId(postime);
+    const vl = await vleresoIds(ids, profili);
+    return { numri, te_reja: ids.length, te_mira: vl.filter(eMire).length };
+  }
+
+  // ---- Kerkimi fillestar (6 muaj), shih PLANI-KERKIMI.md seksioni 6 ----
+  // 1) 2 termat e pare me OR: faqet 1..4; ndalet kur faqja ka < 10 rezultate ose < 3 postime te mira nga te rejat.
+  // 2) 5 termat e tjere: secili veç, faqja 1.
+  // 3) Aktivizon ciklin ditor (1 term ne dite, 7 ditet e fundit), qe nis neser.
+  let fillestar = null; // gjendja e punes ne sfond, per faqen
+  async function bejFillestarin(profili, terma, subreddite) {
+    const shkruaj = m => { fillestar.mesazhe.push(m); fillestar.mesazhi = m; };
+    const tbs = tbsMuaj(MUAJ_FILLESTARE), grupet = grupetSubreddite(subreddite), k0 = krediteKetuNisje;
+    const shto = x => { fillestar.te_reja += x.te_reja; fillestar.te_mira += x.te_mira; };
+    const dy = terma.slice(0, 2), qOr = '(' + dy.map(t => '"' + t.replace(/"/g, '') + '"').join(' OR ') + ')', etOr = dy.join(' OR ');
+    for (const gr of grupet) {
+      for (let faqja = 1; faqja <= MAKS_FAQE_FILLESTARE; faqja++) {
+        shkruaj('2 termat me te mire (' + etOr + '), faqja ' + faqja + (grupet.length > 1 ? ', grupi i subreddit-eve ' + (grupet.indexOf(gr) + 1) : '') + '...');
+        const x = await faqeReddit(qOr, etOr, gr, tbs, faqja, profili);
+        shto(x);
+        shkruaj('Faqja ' + faqja + ': ' + x.numri + ' rezultate, ' + x.te_reja + ' te reja, ' + x.te_mira + ' te mira.');
+        if (x.numri < 10) { shkruaj('Ndalet: faqja kishte me pak se 10 rezultate (nuk ka me).'); break; }
+        if (faqja < MAKS_FAQE_FILLESTARE && x.te_mira < MIN_TE_MIRA_PER_FAQE) { shkruaj('Ndalet: me pak se ' + MIN_TE_MIRA_PER_FAQE + ' postime te mira ne kete faqe.'); break; }
+      }
+    }
+    for (const t of terma.slice(2)) {
+      for (const gr of grupet) {
+        shkruaj('Termi "' + t + '", 6 muajt e fundit...');
+        const x = await faqeReddit(t, t, gr, tbs, 1, profili);
+        shto(x);
+      }
+    }
+    await ruajGjendjen('cikli_aktiv', '1');
+    await ruajGjendjen('cikli_indeksi', '0');
+    await ruajGjendjen('cikli_data_fundit', dataSot()); // cikli ditor nis neser
+    fillestar.kredite = krediteKetuNisje - k0;
+    shkruaj('Perfundoi: ' + fillestar.te_reja + ' postime te reja, ' + fillestar.te_mira + ' te mira, ' + fillestar.kredite + ' kredite Serper. Kerkimi ditor nis neser.');
+  }
+
+  // ---- Cikli ditor: 1 term ne dite (7 termat = 7 ditet e javes), vetem 7 ditet e fundit ----
+  const dataSot = () => new Date().toISOString().slice(0, 10);
+  let cikliDuke = false;
+  async function bejCiklinDitor(forco) {
+    if (cikliDuke || kerkimDuke || (fillestar && !fillestar.perfunduar)) return null;
+    const g = await lexoGjendjen();
+    if (!forco && g.cikli_aktiv !== '1') return null;
+    if (!SERPER_KEY) return null;
+    let terma = [];
+    try { terma = JSON.parse(g.terma || '[]'); } catch (e) { terma = []; }
+    terma = pastroTermat(terma);
+    const profili = String(g.profili || '').trim();
+    if (!terma.length || !profili) return null;
+    if (!forco) {
+      // "Rezervon" diten e sotme ne databaze, qe kerkimi te behet vetem nje here ne dite edhe nese serveri rinis.
+      const z = await pool.query(`INSERT INTO komunitete_gjendja (celesi, vlera, perditesuar) VALUES ('cikli_data_fundit', $1, now())
+        ON CONFLICT (celesi) DO UPDATE SET vlera = EXCLUDED.vlera, perditesuar = now() WHERE komunitete_gjendja.vlera IS DISTINCT FROM EXCLUDED.vlera RETURNING celesi`, [dataSot()]);
+      if (!z.rowCount) return null;
+    }
+    cikliDuke = true;
+    try {
+      let subreddite = [];
+      try { subreddite = pastroSubreddite(JSON.parse(g.subreddite || '[]')); } catch (e) { subreddite = []; }
+      const i = (parseInt(g.cikli_indeksi, 10) || 0) % terma.length, termi = terma[i], k0 = krediteKetuNisje;
+      const rez = { data: new Date().toISOString(), termi, te_reja: 0, te_mira: 0, gabim: null };
+      try {
+        for (const gr of grupetSubreddite(subreddite)) {
+          const x = await faqeReddit(termi, termi, gr, 'qdr:w', 1, profili);
+          rez.te_reja += x.te_reja; rez.te_mira += x.te_mira;
+        }
+      } catch (e) { rez.gabim = pastroGabimin(e); }
+      rez.kredite = krediteKetuNisje - k0;
+      await ruajGjendjen('cikli_indeksi', String(i + 1));
+      await ruajGjendjen('cikli_fundit', JSON.stringify(rez));
+      if (forco) await ruajGjendjen('cikli_data_fundit', dataSot());
+      return rez;
+    } finally { cikliDuke = false; }
+  }
+  // Kontrollon cdo 15 minuta; kerkimi behet vetem nje here ne dite.
+  setTimeout(() => bejCiklinDitor(false).catch(e => console.error('cikli ditor:', e.message)), 60000);
+  setInterval(() => bejCiklinDitor(false).catch(e => console.error('cikli ditor:', e.message)), 15 * 60 * 1000);
+
   async function numrat() {
     const n = { 'i ri': 0, 'u pergjigj': 0, 'e lashe': 0 };
     (await pool.query(`SELECT COALESCE(statusi, 'i ri') AS s, COUNT(*)::int AS n FROM komunitete_postime GROUP BY 1`)).rows.forEach(r => { if (r.s in n) n[r.s] = r.n; });
@@ -420,14 +553,16 @@ module.exports = function (app, pool) {
       if (!profili) return res.status(400).json({ error: 'Shkruaj fillimisht pershkrimin e produktit (pika 1).' });
       const sakte = (req.body || {}).saktesia !== 'e-gjere';
       const t = await pyetAI(sakte
-        ? 'A product is described below. Write 8 short exact phrases (2 or 3 words each) that an INDIVIDUAL person would literally write in the TITLE or text of a forum post ' +
+        ? 'A product is described below. Write 7 short exact phrases (2 or 3 words each) that an INDIVIDUAL person would literally write in the TITLE or text of a forum post ' +
           'when they need exactly this product or have exactly the problem it solves (for example for a budgeting app: "budgeting app", "track my spending", "always overspending", "YNAB alternative"). ' +
           'Each phrase will be searched word for word, so use the most common natural wording, and keep each phrase specific to this product, not to the broad topic. ' +
-          'Never use: best, top, guide, tips, 2026. No quotation marks inside the strings. Use the language the people posting would most likely use (default English). Return ONLY a JSON array of 8 strings.\n\nProduct: ' + profili
-        : 'A product is described below. Write 8 short search phrases (2 to 5 words each) that INDIVIDUAL people would write in a forum post when they have the problem this product solves, ' +
+          'Never use: best, top, guide, tips, 2026. No quotation marks inside the strings. Use the language the people posting would most likely use (default English). ' +
+          'Order them from best to worst: the first two must be the phrases most likely to find people who would use this product right now. Return ONLY a JSON array of 7 strings.\n\nProduct: ' + profili
+        : 'A product is described below. Write 7 short search phrases (2 to 5 words each) that INDIVIDUAL people would write in a forum post when they have the problem this product solves, ' +
         'or when they look for a tool like it. Write them the way a person writes about their own situation (for example "clients not paying", "how do I track spending", "alternative to quickbooks"), ' +
         'not marketing language and not article titles (never use: best, top, guide, tips, 2026). Mix angles: the problem, asking for a recommendation, looking for an alternative, a frustration. ' +
-        'No quotation marks, no operators. Use the language the people posting would most likely use (default English). Return ONLY a JSON array of 8 strings.\n\nProduct: ' + profili);
+        'No quotation marks, no operators. Use the language the people posting would most likely use (default English). ' +
+        'Order them from best to worst: the first two must be the phrases most likely to find people who would use this product right now. Return ONLY a JSON array of 7 strings.\n\nProduct: ' + profili);
       const lista = pastroTermat((listeNgaTeksti(t) || []).map(x => typeof x === 'string' ? x.replace(/["“”]/g, '') : x));
       if (!lista.length) return res.status(502).json({ error: 'AI nuk ktheu terma te vlefshem. Provo serish.' });
       res.json({ ok: true, terma: lista });
@@ -535,6 +670,64 @@ module.exports = function (app, pool) {
       // Sa postime perputhen me filtrin gjithsej (jo vetem sa shfaqen, qe kufizohen ne 200).
       const totali = (await pool.query('SELECT COUNT(*)::int AS n FROM komunitete_postime' + (kushte.length ? ' WHERE ' + kushte.join(' AND ') : ''), par.slice(0, -1))).rows[0].n;
       res.json({ ok: true, rows, totali, numrat: await numrat(), pa_vleresuar: paVl });
+    } catch (e) { res.status(500).json({ error: pastroGabimin(e) }); }
+  });
+
+  // Kerkimi fillestar (6 muaj, Reddit permes Serper). Nis ne sfond; faqja pyet GET /api/komunitete/fillestar per ecurine.
+  app.post('/api/komunitete/fillestar', async (req, res) => {
+    try {
+      if (!(await prit(res))) return;
+      if (!SERPER_KEY) return res.status(400).json({ error: 'SERPER_API_KEY mungon te Railway, Variables.' });
+      if (!OPENAI_KEY) return res.status(400).json({ error: 'OPENAI_API_KEY mungon te Railway, Variables.' });
+      if (fillestar && !fillestar.perfunduar) return res.status(409).json({ error: 'Kerkimi fillestar po behet tashme.' });
+      if (kerkimDuke || cikliDuke) return res.status(409).json({ error: 'Nje kerkim tjeter po behet. Prit pak.' });
+      const b = req.body || {};
+      const profili = String(b.profili || '').replace(/\u0000/g, '').trim().slice(0, 2000);
+      const terma = pastroTermat(b.terma), subreddite = pastroSubreddite(b.subreddite);
+      if (!profili) return res.status(400).json({ error: 'Shkruaj pershkrimin e produktit (pika 1).' });
+      if (terma.length < 2) return res.status(400).json({ error: 'Duhen te pakten 2 terma (idealisht 7). Dy te paret jane me te mirat.' });
+      await ruajGjendjen('profili', profili);
+      await ruajGjendjen('terma', JSON.stringify(terma));
+      await ruajGjendjen('subreddite', JSON.stringify(subreddite));
+      fillestar = { fillimi: new Date().toISOString(), mesazhe: [], mesazhi: 'Po nis...', te_reja: 0, te_mira: 0, kredite: 0, perfunduar: false, gabim: null };
+      res.json({ ok: true });
+      bejFillestarin(profili, terma, subreddite)
+        .catch(e => { fillestar.gabim = pastroGabimin(e); fillestar.mesazhi = 'Gabim: ' + fillestar.gabim; })
+        .finally(() => { fillestar.perfunduar = true; });
+    } catch (e) { res.status(500).json({ error: pastroGabimin(e) }); }
+  });
+  app.get('/api/komunitete/fillestar', (req, res) => {
+    res.json({ ok: true, fillestar: fillestar ? Object.assign({}, fillestar, { mesazhe: fillestar.mesazhe.slice(-30) }) : null });
+  });
+
+  // Gjendja e ciklit ditor dhe kreditet e Serper.
+  app.get('/api/komunitete/cikli', async (req, res) => {
+    try {
+      if (!(await prit(res))) return;
+      const g = await lexoGjendjen();
+      let terma = [], fundit = null;
+      try { terma = pastroTermat(JSON.parse(g.terma || '[]')); } catch (e) { terma = []; }
+      try { fundit = JSON.parse(g.cikli_fundit || 'null'); } catch (e) { fundit = null; }
+      const i = terma.length ? (parseInt(g.cikli_indeksi, 10) || 0) % terma.length : 0;
+      res.json({ ok: true, aktiv: g.cikli_aktiv === '1', termi_radhes: terma[i] || null, data_fundit: g.cikli_data_fundit || null,
+        fundit, kredite_total: parseInt(g.serper_kredite, 10) || 0, duke: cikliDuke });
+    } catch (e) { res.status(500).json({ error: pastroGabimin(e) }); }
+  });
+  app.post('/api/komunitete/cikli', async (req, res) => {
+    try {
+      if (!(await prit(res))) return;
+      await ruajGjendjen('cikli_aktiv', (req.body || {}).aktiv ? '1' : '0');
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: pastroGabimin(e) }); }
+  });
+  // Kerkon termin e radhes tani (per testim), pa pritur diten tjeter.
+  app.post('/api/komunitete/cikli/tani', async (req, res) => {
+    try {
+      if (!(await prit(res))) return;
+      if (!SERPER_KEY) return res.status(400).json({ error: 'SERPER_API_KEY mungon te Railway, Variables.' });
+      const rez = await bejCiklinDitor(true);
+      if (!rez) return res.status(409).json({ error: 'Nuk u nis: mungojne termat/pershkrimi, ose nje kerkim tjeter po behet.' });
+      res.json({ ok: true, rez });
     } catch (e) { res.status(500).json({ error: pastroGabimin(e) }); }
   });
 
