@@ -14,7 +14,12 @@
     '<p class="mut">Kerkon termat ne Reddit (permes Google/Serper, rreth 1 kredit per kerkese), Hacker News (postime dhe komente) dhe Stack Exchange (pyetje); dy te fundit jane falas. ',
     'Postimet ruhen dhe AI i vlereson: a i ka shkruar nje individ apo nje biznes, dhe sa ia vlen te pergjigjesh (0 deri 100). ',
     'Asgje nuk i dergohet askujt: ti hap postimin dhe pergjigjesh vete.</p>',
-    '<div style="font-size:13px; margin-bottom:6px;">1. Produkti (AI e perdor per vleresimin)</div>',
+    '<div style="font-size:13px; margin-bottom:6px;">0. Biznesi: domaini dhe/ose pershkrimi. AI krijon pershkrimin e sakte dhe vendos nese eshte B2B apo B2C.</div>',
+    '<div class="row" style="align-items:center;"><input type="text" id="komDomaini" placeholder="Domaini i biznesit, p.sh. shembull.com (opsional nese ke pershkrim)" style="flex:1; min-width:220px;">',
+    '<select id="komLloji"><option value="b2c">B2C: klientet jane individe</option><option value="b2b">B2B: klientet jane biznese</option></select>',
+    '<button id="komAnalizoBtn" class="njBtnGri">Analizo biznesin me AI</button></div>',
+    '<div id="komAnalizoStat" style="font-size:12px; color:#8b949e; margin-bottom:10px;"></div>',
+    '<div style="font-size:13px; margin-bottom:6px;">1. Produkti (AI e perdor per vleresimin). Mund ta shkruash vete, ose e plotesonte "Analizo biznesin".</div>',
     '<textarea id="komProfili" rows="3" placeholder="p.sh. Mjet online qe u dergon automatikisht kujtesa klienteve te parukerive per takimet"></textarea>',
     '<div style="font-size:13px; margin:14px 0 6px;">2. Termat: nje per rresht, maksimumi 7 (nje per cdo dite te javes). 2 te paret jane me te mirat: kerkimi fillestar i kerkon bashke me OR.</div>',
     '<div class="row" style="align-items:center;"><select id="komSaktesia"><option value="e-sakte" selected>Kerkim i sakte (per fillim): termi fjale per fjale</option><option value="e-gjere">Kerkim i gjere (per cdo dite): fjalet mund te jene kudo</option></select></div>',
@@ -38,7 +43,7 @@
     '<div id="komKuota" style="font-size:12px; color:#8b949e; margin-bottom:6px;"></div>',
     '<div id="komGabime" style="font-size:12px; color:#f85149; margin-bottom:6px;"></div>',
     '<div style="border-top:1px solid #2a313c; margin:16px 0;"></div>',
-    '<div style="font-size:13px; margin-bottom:6px;">4. Kerkimi fillestar dhe kerkimi ditor (vetem Reddit, permes Serper)</div>',
+    '<div style="font-size:13px; margin-bottom:6px;">4. Kerkimi fillestar dhe kerkimi ditor (B2C: Reddit; B2B: Reddit + Indie Hackers + Hacker News)</div>',
     '<p class="mut" style="margin-top:0;">Kerkimi fillestar (6 muajt e fundit): 2 termat e pare bashke me OR, faqet 1 deri 4 (ndalet kur nje faqe ka me pak se 10 rezultate ose me pak se 3 postime te mira); ',
     'pastaj 5 termat e tjere, secili faqja 1. Perdor termat, pershkrimin dhe subreddit-et me siper. Pas kesaj, cdo dite kerkohet automatikisht 1 term (7 ditet e fundit), me radhe.</p>',
     '<div class="row" style="align-items:center;"><button id="komFillBtn">Nis kerkimin fillestar</button><span id="komFillStat" style="font-size:13px; color:#8b949e;"></span></div>',
@@ -48,10 +53,10 @@
     '<div style="border-top:1px solid #2a313c; margin:16px 0;"></div>',
     '<div class="row" style="align-items:center;">',
     '<select id="komFStatusi"><option value="i ri">Te reja</option><option value="u pergjigj">U pergjigj</option><option value="e lashe">E lashe</option><option value="">Te gjitha</option></select>',
-    '<select id="komFBurimi"><option value="">Te gjitha burimet</option><option value="hn">Hacker News</option><option value="se">Stack Exchange</option><option value="reddit">Reddit</option></select>',
+    '<select id="komFBurimi"><option value="">Te gjitha burimet</option><option value="hn">Hacker News</option><option value="se">Stack Exchange</option><option value="reddit">Reddit</option><option value="ih">Indie Hackers</option></select>',
     '<select id="komFMin"><option value="0">Cdo pike</option><option value="40">Pike 40+</option><option value="60" selected>Pike 60+ (vetem te mirat)</option><option value="80">Pike 80+</option></select>',
     '<select id="komFRendi"><option value="pike">Sipas pikeve te AI</option><option value="">Me te rejat fillimisht</option></select>',
-    '<label class="bisChk"><input type="checkbox" id="komFPaBiznes" checked> Fshih bizneset (sipas AI)</label>',
+    '<label class="bisChk"><input type="checkbox" id="komFPaBiznes" checked> <span id="komFPaBiznesTxt">Fshih bizneset dhe konkurrentet (sipas AI)</span></label>',
     '<button id="komRifreskoBtn" class="njBtnGri">Rifresko</button>',
     '<button id="komVleresoBtn" class="njBtnGri">Vlereso te pavleresuarat</button>',
     '<button id="komRivleresoBtn" class="njBtnGri">Rivlereso te gjitha</button>',
@@ -99,6 +104,8 @@
     var d = await fetch('/api/komunitete/cilesimet').then(json).catch(function (e) { return { error: e.message }; });
     if (d.error) { el('komStat').textContent = 'Gabim: ' + d.error; return; }
     el('komProfili').value = d.profili || '';
+    el('komDomaini').value = d.domaini || '';
+    vendosLlojin(d.lloji);
     el('komTerma').value = (d.terma || []).join('\n');
     el('komVendet').value = (d.vendet || []).join(', ');
     el('komSubreddite').value = (d.subreddite || []).join(', ');
@@ -166,7 +173,7 @@
     }
     btn.disabled = true; el('komGabime').textContent = ''; stat.textContent = 'Po kerkoj (mund te marre disa sekonda)...';
     var d = await post('/api/komunitete/kerko', {
-      profili: el('komProfili').value, terma: terma, vendet: vendet, dite: Number(el('komDite').value),
+      profili: el('komProfili').value, lloji: el('komLloji').value, terma: terma, vendet: vendet, dite: Number(el('komDite').value),
       hn: el('komHN').checked, se: el('komSE').checked, se_te_gjitha: el('komSETeGjitha').checked,
       reddit: el('komRD').checked, subreddite: subreddite, saktesia: el('komSaktesia').value
     }).catch(function (e) { return { error: e.message }; });
@@ -217,7 +224,7 @@
     rows.forEach(function (k) {
       var tr = document.createElement('tr');
       var tdB = nje('td', null, 'font-size:12px; white-space:nowrap;');
-      tdB.appendChild(nje('div', k.burimi === 'hn' ? 'Hacker News' : (k.burimi === 'reddit' ? 'Reddit' : 'Stack Exchange')));
+      tdB.appendChild(nje('div', { hn: 'Hacker News', reddit: 'Reddit', ih: 'Indie Hackers', se: 'Stack Exchange' }[k.burimi] || k.burimi));
       if (k.vendi) { tdB.appendChild(nje('div', k.vendi, 'color:#8b949e;')); }
       tr.appendChild(tdB);
       var tdP = nje('td', null, 'max-width:560px;');
@@ -232,7 +239,8 @@
       tr.appendChild(nje('td', k.autori || '', 'font-size:12px; word-break:break-all; max-width:130px;'));
       var tdA = nje('td', null, 'min-width:120px;');
       if (k.ai_at) {
-        var et = nje('span', k.ai_biznes === true ? 'Biznes' : (k.ai_biznes === false ? 'Individ' : '?'));
+        var b2b = el('komLloji').value === 'b2b';
+        var et = nje('span', k.ai_biznes === true ? (b2b ? 'Konkurrent' : 'Biznes') : (k.ai_biznes === false ? (b2b ? 'Klient i mundshem' : 'Individ') : '?'));
         et.className = 'njAI ' + (k.ai_biznes === true ? 'l4' : (k.ai_pike >= 60 ? 'l1' : (k.ai_pike >= 40 ? 'l2' : 'l5')));
         tdA.appendChild(et);
         if (k.ai_pike !== null && k.ai_pike !== undefined) { tdA.appendChild(nje('div', k.ai_pike + ' / 100', 'font-size:12px; color:#8b949e;')); }
@@ -254,6 +262,27 @@
   }
 
   el('komKerkoBtn').onclick = kerko;
+
+  // ---- Analiza e biznesit (domain/pershkrim -> pershkrim i sakte + B2B/B2C) ----
+  function vendosLlojin(v) {
+    el('komLloji').value = v === 'b2b' ? 'b2b' : 'b2c';
+    el('komFPaBiznesTxt').textContent = el('komLloji').value === 'b2b' ? 'Fshih konkurrentet (sipas AI)' : 'Fshih bizneset dhe konkurrentet (sipas AI)';
+  }
+  el('komLloji').onchange = function () { vendosLlojin(el('komLloji').value); ngarkoListen(); };
+  el('komAnalizoBtn').onclick = async function () {
+    var st = el('komAnalizoStat'), b = el('komAnalizoBtn');
+    var dom = el('komDomaini').value.trim(), pr = el('komProfili').value.trim();
+    if (!dom && !pr) { st.textContent = 'Shkruaj domainin, pershkrimin (pika 1), ose te dyja.'; return; }
+    b.disabled = true; st.textContent = 'AI po analizon biznesin...';
+    var d = await post('/api/komunitete/analizo', { domaini: dom, pershkrimi: pr }).catch(function (e) { return { error: e.message }; });
+    b.disabled = false;
+    if (d.error) { st.textContent = 'Gabim: ' + d.error; return; }
+    el('komProfili').value = d.pershkrimi;
+    vendosLlojin(d.lloji);
+    st.textContent = (d.lloji === 'b2b' ? 'B2B' : 'B2C') + (d.arsye ? ': ' + d.arsye : '') +
+      (dom && !d.faqja_u_lexua ? ' (faqja e domainit nuk u lexua: ' + (d.gabim_faqe || '') + '; u perdor vetem pershkrimi)' : '') +
+      ' Kontrollo pershkrimin dhe llojin, pastaj gjenero termat dhe subreddit-et.';
+  };
 
   // ---- Kerkimi fillestar dhe cikli ditor ----
   function lexoTermat() { return el('komTerma').value.split('\n').map(function (x) { return x.trim(); }).filter(Boolean); }
@@ -293,8 +322,9 @@
     if (terma.length < 2) { el('komFillStat').textContent = 'Duhen te pakten 2 terma (idealisht 7).'; return; }
     if (terma.length > 7) { el('komFillStat').textContent = 'Maksimumi 7 terma.'; return; }
     var grupe = Math.max(1, Math.ceil(sub.length / 6)), maks = grupe * (4 + Math.max(0, terma.length - 2));
+    if (el('komLloji').value === 'b2b') { maks += 2 + Math.max(0, terma.length - 2); } // Indie Hackers; Hacker News eshte falas
     if (!window.confirm('Kerkimi fillestar perdor deri ne ' + maks + ' kredite Serper (zakonisht me pak, sepse ndalet heret). Vazhdo?')) { return; }
-    var d = await post('/api/komunitete/fillestar', { profili: el('komProfili').value, terma: terma, subreddite: sub }).catch(function (e) { return { error: e.message }; });
+    var d = await post('/api/komunitete/fillestar', { profili: el('komProfili').value, lloji: el('komLloji').value, terma: terma, subreddite: sub }).catch(function (e) { return { error: e.message }; });
     if (d.error) { el('komFillStat').textContent = 'Gabim: ' + d.error; return; }
     el('komFillLog').textContent = '';
     el('komFStatusi').value = 'i ri';
@@ -317,7 +347,7 @@
   el('komTermaAiBtn').onclick = async function () {
     var st = el('komTermaStat'), b = el('komTermaAiBtn');
     b.disabled = true; st.textContent = 'AI po formulon termat...';
-    var d = await post('/api/komunitete/terma-ai', { profili: el('komProfili').value, saktesia: el('komSaktesia').value }).catch(function (e) { return { error: e.message }; });
+    var d = await post('/api/komunitete/terma-ai', { profili: el('komProfili').value, lloji: el('komLloji').value, saktesia: el('komSaktesia').value }).catch(function (e) { return { error: e.message }; });
     b.disabled = false;
     if (d.error) { st.textContent = 'Gabim: ' + d.error; return; }
     el('komTerma').value = d.terma.join('\n');
@@ -326,7 +356,7 @@
   el('komSubAiBtn').onclick = async function () {
     var st = el('komSubStat'), b = el('komSubAiBtn');
     b.disabled = true; st.textContent = 'AI po kerkon subreddit-e...';
-    var d = await post('/api/komunitete/subreddite-ai', { profili: el('komProfili').value }).catch(function (e) { return { error: e.message }; });
+    var d = await post('/api/komunitete/subreddite-ai', { profili: el('komProfili').value, lloji: el('komLloji').value }).catch(function (e) { return { error: e.message }; });
     b.disabled = false;
     if (d.error) { st.textContent = 'Gabim: ' + d.error; return; }
     el('komSubreddite').value = d.subreddite.join(', ');
@@ -338,7 +368,7 @@
   // Rivleresimi: per postimet "Te reja" fshin pikët e vjetra dhe i vlereson serish me pershkrimin aktual te produktit.
   el('komRivleresoBtn').onclick = async function () {
     if (!window.confirm('Te vleresohen serish te gjitha postimet "Te reja"? Pikët e vjetra zevendesohen.')) { return; }
-    var d = await post('/api/komunitete/rivlereso', { profili: el('komProfili').value }).catch(function (e) { return { error: e.message }; });
+    var d = await post('/api/komunitete/rivlereso', { profili: el('komProfili').value, lloji: el('komLloji').value }).catch(function (e) { return { error: e.message }; });
     if (d.error) { el('komStat').textContent = 'Gabim: ' + d.error; return; }
     el('komStat').textContent = d.rivendosur + ' postime do te vleresohen serish...';
     await vleresoTeGjitha();
