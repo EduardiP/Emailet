@@ -1,3 +1,5 @@
+// KONTEKSTI: plani i plote i kerkimit (Reddit permes Google: SearXNG + Serper, versioni falas, 7 terma, cikli javor, radha 24-oreshe,
+// burimet e ardhshme) eshte te PLANI-KERKIMI.md ne te njejtin folder. Lexoje para se ta ndryshosh kete skedar.
 // Seksioni "Komunitete": kerkon termat ne Hacker News (Algolia, falas, pa celes) dhe ne faqet e Stack Exchange (API publike, falas).
 // Postimet ruhen te komunitete_postime dhe AI (gpt-5-nano) i vlereson: individ apo biznes, dhe sa ia vlen t'i pergjigjesh (0-100).
 // Variabla te Railway: STACKEXCHANGE_KEY (opsionale, por e keshillueshme: pa te 300 kerkesa ne dite, me te 10,000), OPENAI_API_KEY (ekziston tashme).
