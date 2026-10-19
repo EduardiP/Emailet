@@ -16,7 +16,7 @@
     'Asgje nuk i dergohet askujt: ti hap postimin dhe pergjigjesh vete.</p>',
     '<div style="font-size:13px; margin-bottom:6px;">1. Produkti (AI e perdor per vleresimin)</div>',
     '<textarea id="komProfili" rows="3" placeholder="p.sh. Mjet online qe u dergon automatikisht kujtesa klienteve te parukerive per takimet"></textarea>',
-    '<div style="font-size:13px; margin:14px 0 6px;">2. Termat: nje per rresht, maksimumi 8. Fraza te shkurtra, si i shkruan nje person qe ka problemin (2 deri 5 fjale).</div>',
+    '<div style="font-size:13px; margin:14px 0 6px;">2. Termat: nje per rresht, maksimumi 7 (nje per cdo dite te javes). 2 te paret jane me te mirat: kerkimi fillestar i kerkon bashke me OR.</div>',
     '<div class="row" style="align-items:center;"><select id="komSaktesia"><option value="e-sakte" selected>Kerkim i sakte (per fillim): termi fjale per fjale</option><option value="e-gjere">Kerkim i gjere (per cdo dite): fjalet mund te jene kudo</option></select></div>',
     '<div class="row"><button id="komTermaAiBtn" class="njBtnGri">Formulo termat me AI (nga pershkrimi)</button><span id="komTermaStat" style="font-size:13px; color:#8b949e; align-self:center;"></span></div>',
     '<textarea id="komTerma" rows="4" placeholder="appointment reminder app&#10;clients forget appointments&#10;alternative to calendly"></textarea>',
@@ -37,6 +37,14 @@
     '</div>',
     '<div id="komKuota" style="font-size:12px; color:#8b949e; margin-bottom:6px;"></div>',
     '<div id="komGabime" style="font-size:12px; color:#f85149; margin-bottom:6px;"></div>',
+    '<div style="border-top:1px solid #2a313c; margin:16px 0;"></div>',
+    '<div style="font-size:13px; margin-bottom:6px;">4. Kerkimi fillestar dhe kerkimi ditor (vetem Reddit, permes Serper)</div>',
+    '<p class="mut" style="margin-top:0;">Kerkimi fillestar (6 muajt e fundit): 2 termat e pare bashke me OR, faqet 1 deri 4 (ndalet kur nje faqe ka me pak se 10 rezultate ose me pak se 3 postime te mira); ',
+    'pastaj 5 termat e tjere, secili faqja 1. Perdor termat, pershkrimin dhe subreddit-et me siper. Pas kesaj, cdo dite kerkohet automatikisht 1 term (7 ditet e fundit), me radhe.</p>',
+    '<div class="row" style="align-items:center;"><button id="komFillBtn">Nis kerkimin fillestar</button><span id="komFillStat" style="font-size:13px; color:#8b949e;"></span></div>',
+    '<div id="komFillLog" style="font-size:12px; color:#8b949e; white-space:pre-wrap; margin-bottom:8px;"></div>',
+    '<div id="komCikli" style="font-size:13px; color:#c9d1d9; margin-bottom:6px;"></div>',
+    '<div class="row"><button id="komCikliBtn" class="njBtnGri">Ndalo kerkimin ditor</button><button id="komCikliTaniBtn" class="njBtnGri">Kerko termin e radhes tani</button></div>',
     '<div style="border-top:1px solid #2a313c; margin:16px 0;"></div>',
     '<div class="row" style="align-items:center;">',
     '<select id="komFStatusi"><option value="i ri">Te reja</option><option value="u pergjigj">U pergjigj</option><option value="e lashe">E lashe</option><option value="">Te gjitha</option></select>',
@@ -149,7 +157,7 @@
     var stat = el('komStat'), btn = el('komKerkoBtn');
     var terma = el('komTerma').value.split('\n').map(function (x) { return x.trim(); }).filter(Boolean);
     if (!terma.length) { stat.textContent = 'Shkruaj te pakten nje term.'; return; }
-    if (terma.length > 8) { stat.textContent = 'Maksimumi 8 terma per kerkim.'; return; }
+    if (terma.length > 7) { stat.textContent = 'Maksimumi 7 terma per kerkim.'; return; }
     var vendet = el('komVendet').value.split(',').map(function (x) { return x.trim(); }).filter(Boolean);
     var subreddite = el('komSubreddite').value.split(',').map(function (x) { return x.trim(); }).filter(Boolean);
     if (el('komRD').checked) {
@@ -246,6 +254,65 @@
   }
 
   el('komKerkoBtn').onclick = kerko;
+
+  // ---- Kerkimi fillestar dhe cikli ditor ----
+  function lexoTermat() { return el('komTerma').value.split('\n').map(function (x) { return x.trim(); }).filter(Boolean); }
+  function lexoSubreddite() { return el('komSubreddite').value.split(',').map(function (x) { return x.trim(); }).filter(Boolean); }
+  var cikliAktiv = false, fillOra = null;
+  async function ngarkoCiklin() {
+    var d = await fetch('/api/komunitete/cikli').then(json).catch(function (e) { return { error: e.message }; });
+    var c = el('komCikli');
+    if (d.error) { c.textContent = 'Kerkimi ditor: ' + d.error; return; }
+    cikliAktiv = !!d.aktiv;
+    el('komCikliBtn').textContent = cikliAktiv ? 'Ndalo kerkimin ditor' : 'Aktivizo kerkimin ditor';
+    var t = 'Kerkimi ditor: ' + (cikliAktiv ? 'AKTIV' : 'i ndalur') + (d.termi_radhes ? ' | termi i radhes: "' + d.termi_radhes + '"' : '') +
+      (d.data_fundit ? ' | kerkimi i fundit: ' + d.data_fundit : '') + ' | kredite Serper gjithsej: ' + (d.kredite_total || 0);
+    if (d.fundit) { t += '\nHera e fundit: "' + d.fundit.termi + '" -> ' + d.fundit.te_reja + ' te reja, ' + d.fundit.te_mira + ' te mira' + (d.fundit.gabim ? ' | gabim: ' + d.fundit.gabim : ''); }
+    c.style.whiteSpace = 'pre-wrap'; c.textContent = t;
+  }
+  function shfaqFillestarin(f) {
+    if (!f) { return; }
+    el('komFillStat').textContent = f.perfunduar ? (f.gabim ? 'Gabim: ' + f.gabim : 'Perfundoi.') : 'Po kerkon...';
+    el('komFillLog').textContent = (f.mesazhe || []).join('\n');
+  }
+  async function kontrolloFillestarin() {
+    var d = await fetch('/api/komunitete/fillestar').then(json).catch(function () { return {}; });
+    var f = d && d.fillestar;
+    shfaqFillestarin(f);
+    if (f && !f.perfunduar) {
+      el('komFillBtn').disabled = true;
+      clearTimeout(fillOra); fillOra = setTimeout(kontrolloFillestarin, 3000);
+      ngarkoListen();
+    } else {
+      el('komFillBtn').disabled = false;
+      if (f) { ngarkoListen(); ngarkoCiklin(); }
+    }
+  }
+  el('komFillBtn').onclick = async function () {
+    var terma = lexoTermat(), sub = lexoSubreddite();
+    if (terma.length < 2) { el('komFillStat').textContent = 'Duhen te pakten 2 terma (idealisht 7).'; return; }
+    if (terma.length > 7) { el('komFillStat').textContent = 'Maksimumi 7 terma.'; return; }
+    var grupe = Math.max(1, Math.ceil(sub.length / 6)), maks = grupe * (4 + Math.max(0, terma.length - 2));
+    if (!window.confirm('Kerkimi fillestar perdor deri ne ' + maks + ' kredite Serper (zakonisht me pak, sepse ndalet heret). Vazhdo?')) { return; }
+    var d = await post('/api/komunitete/fillestar', { profili: el('komProfili').value, terma: terma, subreddite: sub }).catch(function (e) { return { error: e.message }; });
+    if (d.error) { el('komFillStat').textContent = 'Gabim: ' + d.error; return; }
+    el('komFillLog').textContent = '';
+    el('komFStatusi').value = 'i ri';
+    kontrolloFillestarin();
+  };
+  el('komCikliBtn').onclick = async function () {
+    var d = await post('/api/komunitete/cikli', { aktiv: !cikliAktiv }).catch(function (e) { return { error: e.message }; });
+    if (d.error) { el('komCikli').textContent = 'Gabim: ' + d.error; return; }
+    ngarkoCiklin();
+  };
+  el('komCikliTaniBtn').onclick = async function () {
+    if (!window.confirm('Kerko tani termin e radhes (7 ditet e fundit)? Perdor 1 kredit Serper per cdo grup me 6 subreddit-e.')) { return; }
+    var b = el('komCikliTaniBtn'); b.disabled = true; el('komCikli').textContent = 'Po kerkon termin e radhes...';
+    var d = await post('/api/komunitete/cikli/tani').catch(function (e) { return { error: e.message }; });
+    b.disabled = false;
+    if (d.error) { el('komCikli').textContent = 'Gabim: ' + d.error; return; }
+    ngarkoCiklin(); ngarkoListen();
+  };
   // AI: termat (si shkruan nje person) dhe subreddit-et (ku rrine individet), te dyja nga pershkrimi i produktit.
   el('komTermaAiBtn').onclick = async function () {
     var st = el('komTermaStat'), b = el('komTermaAiBtn');
@@ -254,7 +321,7 @@
     b.disabled = false;
     if (d.error) { st.textContent = 'Gabim: ' + d.error; return; }
     el('komTerma').value = d.terma.join('\n');
-    st.textContent = d.terma.length + ' terma. Shikoji dhe ndryshoji nese duhet.';
+    st.textContent = d.terma.length + ' terma, nga me i miri te me i dobti. Shikoji dhe ndryshoji nese duhet.';
   };
   el('komSubAiBtn').onclick = async function () {
     var st = el('komSubStat'), b = el('komSubAiBtn');
@@ -285,6 +352,6 @@
     var aktiv = cila === 'komunitete';
     tab.className = aktiv ? 'tab aktiv' : 'tab';
     panel.className = aktiv ? 'sec-panel aktiv' : 'sec-panel';
-    if (aktiv) { ngarkoCilesimet().then(ngarkoListen); }
+    if (aktiv) { ngarkoCilesimet().then(ngarkoListen); ngarkoCiklin(); kontrolloFillestarin(); }
   };
 })();
