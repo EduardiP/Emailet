@@ -4,9 +4,17 @@
 
 ## 1. Qëllimi
 
-Shërbimi u ofrohet bizneseve **B2C** (klientët e mi). Për secilin klient gjejmë **individë** (jo biznese, jo konkurrentë) që shkruajnë publikisht se kanë problemin që zgjidh produkti i klientit, ose kërkojnë një produkt të tillë. Klienti hap postimin dhe përgjigjet vetë. Sistemi nuk i dërgon asgjë askujt.
+Shërbimi u ofrohet bizneseve (klientët e mi), **B2C dhe B2B**. Për secilin klient gjejmë njerëz që shkruajnë publikisht se kanë problemin që zgjidh produkti i klientit, ose kërkojnë një produkt të tillë. Klienti hap postimin dhe përgjigjet vetë. Sistemi nuk i dërgon asgjë askujt.
 
-Burimi i parë është **Reddit**. Më vonë shtohen Hacker News, Stack Exchange, Bluesky dhe rrjete të tjera premtuese (seksioni 8).
+- **B2C:** kërkojmë **individë**; bizneset dhe konkurrentët fshihen.
+- **B2B:** kërkojmë **biznese, themelues, ekipe dhe profesionistë** (ata janë klientët); fshihen vetëm **konkurrentët** (ata që shesin produkt të të njëjtit lloj). Për B2B më vonë ofrohen edhe dërgim email-esh dhe njoftime falas.
+
+### 1.1 Analiza e biznesit dhe lloji B2B/B2C
+- Klienti jep **domainin**, **përshkrimin**, ose të dyja. AI (nano) lexon faqen kryesore të domainit (titulli, meta description, teksti) dhe përshkrimin e klientit (ka përparësi), dhe kthen: **përshkrimin e saktë** (2–3 fjali në anglisht), **llojin `b2b` / `b2c`** dhe arsyen.
+- **Lloji vendos:** promptin e vlerësimit (seksioni 7), promptet për terma dhe subreddit-e, dhe **platformat** që kërkohen (seksioni 5).
+- Te projekti real (PhronexusAI) kjo analizë ekziston tashmë në regjistrim: përdoret ajo. Te testimi është `POST /api/komunitete/analizo` (vetëm domaine publike; adresat e brendshme dhe IP private refuzohen).
+
+Burimi i parë është **Reddit**. Për B2B shtohen **Indie Hackers** dhe **Hacker News**. Më vonë: Stack Exchange/Stack Overflow, Bluesky dhe rrjete të tjera (seksioni 8).
 
 ## 2. Pse Reddit kërkohet përmes Google-it, dhe pse vetëm me Serper
 
@@ -42,11 +50,15 @@ Parametrat e Serper që përdoren: `q`, `num=10`, `tbs` (periudha: `qdr:w` java,
 4. AI vlerëson rezultatet, dhe klienti i sheh.
 
 ### 5.2 Pas regjistrimit (vazhdon automatikisht)
+Platformat sipas llojit: **B2C = Reddit**; **B2B = Reddit + Indie Hackers (Serper, `site:indiehackers.com`) + Hacker News (API falas)**.
+
 **a) Thellimi i 2 termave më të mirë:** faqet **2, 3, 4** të të njëjtit kërkim me `OR` (6 muaj). **Ndalet** nëse faqja kthen më pak se 10 rezultate, ose nëse nga postimet e reja të faqes **më pak se 3 janë "të mira"**. AI vlerëson çdo faqe para se të merret tjetra. Maksimumi 3 kredite.
 
 **b) Kërkimi historik i 5 termave të tjerë:** menjëherë, secili veç, **6 muaj**, faqja 1. 5 kredite.
 
-**c) Cikli ditor (vetëm të rejat):** pas a) dhe b), **1 term në ditë** me radhë (7 termat në 7 ditë), periudha **7 ditët e fundit**, faqja 1. Rreth 30 kredite në muaj. Java dhe jo 24 orët, sepse Google i indekson postimet e Reddit-it me 1–3 ditë vonesë; dublikatat hiqen vetë.
+**b2) Vetëm B2B:** Indie Hackers: 2 termat me OR (faqja 1, edhe faqja 2 nëse faqja 1 kishte 10 rezultate dhe ≥ 3 të mira), pastaj 5 termat e tjerë (faqja 1): 6–7 kredite. Hacker News: të 7 termat, 6 muaj, falas.
+
+**c) Cikli ditor (vetëm të rejat):** pas a) dhe b), **1 term në ditë** me radhë (7 termat në 7 ditë), periudha **7 ditët e fundit**, faqja 1, në platformat e llojit (B2B: Reddit + Indie Hackers + Hacker News, 2 kredite në ditë). Rreth 30 kredite në muaj. Java dhe jo 24 orët, sepse Google i indekson postimet e Reddit-it me 1–3 ditë vonesë; dublikatat hiqen vetë.
 
 **Kosto për klient:** ~9 kredite në fillim dhe ~30 në muaj (rreth 0.04$ në muaj).
 
@@ -56,7 +68,11 @@ Serper nuk na bllokon, ndaj radha 24-orëshe nuk është e domosdoshme. Mund të
 
 ## 7. Vlerësimi me AI
 
-- Titujt që tregojnë qartë promovim ("I built…", "We launched…", "… 5.0 update:", "my new app") shënohen **Biznes, 5 pikë**, pa pyetur AI-në.
+Ka **dy prompte**, sipas llojit të klientit. Kolona `ai_biznes = true` do të thotë "jo klient" (B2C: biznes ose konkurrent; B2B: konkurrent) dhe fshihet me filtrin.
+- **B2B:** autori që është themelues, pronar, freelancer, marketer ose punonjës është klient i mundshëm. `a` = shet produkt **të të njëjtit lloj** (konkurrent). Rregulli i titujve më poshtë **nuk** përdoret.
+- **B2C:** si më poshtë.
+
+- (Vetëm B2C) Titujt që tregojnë qartë promovim ("I built…", "We launched…", "… 5.0 update:", "my new app") shënohen **Biznes, 5 pikë**, pa pyetur AI-në.
 - Për të tjerët, AI (`gpt-5-nano`) shkruan arsyen në shqip, pastaj u përgjigjet pyetjeve po/jo: `a` promovon diçka të vetën; `m` **a e zgjidh PRODUKTI nevojën e autorit** (porta kryesore); `k` kërkon mjet/rekomandim; `s` përshkruan problemin e vet; `n` vetëm temë e ngjashme.
 - Pikët i llogarit kodi: a → 5 (Biznes); pa m → 20 (nëse n) ose 5; m+k+s → 90; m+k → 80; m+s → 65; vetëm m → 45.
 - Kufizim: AI sheh vetëm titullin dhe copën e tekstit të Google-it (ndonjëherë nga komentet). 80+ janë të besueshme, 65 duan një vështrim nga njeriu.
