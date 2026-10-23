@@ -16,7 +16,10 @@
     'Asgje nuk i dergohet askujt: ti hap postimin dhe pergjigjesh vete.</p>',
     '<div style="font-size:13px; margin-bottom:6px;">0. Biznesi: domaini dhe/ose pershkrimi. AI krijon pershkrimin e sakte dhe vendos nese eshte B2B apo B2C.</div>',
     '<div class="row" style="align-items:center;"><input type="text" id="komDomaini" placeholder="Domaini i biznesit, p.sh. shembull.com (opsional nese ke pershkrim)" style="flex:1; min-width:220px;">',
-    '<select id="komLloji"><option value="b2c">B2C: klientet jane individe</option><option value="b2b">B2B: klientet jane biznese</option></select>',
+    // Lloji B2B/B2C e vendos AI ("Analizo biznesin"); zgjedhesi fshihet dhe hapet vetem me "ndrysho", nese AI gabon.
+    '<span id="komLlojiTxt" style="font-size:13px;">Lloji: i pavendosur (shtyp "Analizo biznesin")</span>',
+    '<a href="#" id="komLlojiNdrysho" style="font-size:12px;">ndrysho</a>',
+    '<select id="komLloji" hidden><option value="b2c">B2C: klientet jane individe</option><option value="b2b">B2B: klientet jane biznese</option></select>',
     '<button id="komAnalizoBtn" class="njBtnGri">Analizo biznesin me AI</button></div>',
     '<div id="komAnalizoStat" style="font-size:12px; color:#8b949e; margin-bottom:10px;"></div>',
     '<div style="font-size:13px; margin-bottom:6px;">1. Produkti (AI e perdor per vleresimin). Mund ta shkruash vete, ose e plotesonte "Analizo biznesin".</div>',
@@ -264,11 +267,13 @@
   el('komKerkoBtn').onclick = kerko;
 
   // ---- Analiza e biznesit (domain/pershkrim -> pershkrim i sakte + B2B/B2C) ----
-  function vendosLlojin(v) {
+  function vendosLlojin(v, ngaAI) {
     el('komLloji').value = v === 'b2b' ? 'b2b' : 'b2c';
+    el('komLlojiTxt').textContent = 'Lloji: ' + (el('komLloji').value === 'b2b' ? 'B2B (klientet jane biznese)' : 'B2C (klientet jane individe)') + (ngaAI === false ? ', ndryshuar me dore' : ', vendosur nga AI');
     el('komFPaBiznesTxt').textContent = el('komLloji').value === 'b2b' ? 'Fshih konkurrentet (sipas AI)' : 'Fshih bizneset dhe konkurrentet (sipas AI)';
   }
-  el('komLloji').onchange = function () { vendosLlojin(el('komLloji').value); ngarkoListen(); };
+  el('komLloji').onchange = function () { vendosLlojin(el('komLloji').value, false); el('komLloji').hidden = true; ngarkoListen(); };
+  el('komLlojiNdrysho').onclick = function (ev) { ev.preventDefault(); el('komLloji').hidden = !el('komLloji').hidden; };
   el('komAnalizoBtn').onclick = async function () {
     var st = el('komAnalizoStat'), b = el('komAnalizoBtn');
     var dom = el('komDomaini').value.trim(), pr = el('komProfili').value.trim();
