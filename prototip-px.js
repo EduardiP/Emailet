@@ -30,7 +30,7 @@
       kokaTeksti: '100% free',
       sEyebrow: 'Free · no sign-up',
       sPerKe: 'For B2B and B2C businesses',
-      sNjeKerkim: 'Free: one search, posts from the last 5 months.',
+      sNjeKerkim: 'Free: one search per domain, posts from the last 5 months.',
       sHyr: 'Sign in to get the latest interest signals for your business',
       sTitulli: 'Who is looking for what you sell',
       sNen: 'We scan public conversations on Reddit, Hacker News, Indie Hackers and more, and AI shows you the people who need your product right now.',
@@ -119,6 +119,8 @@
       eKufiri4: 'In the free try, emails must be at least 4 hours apart. Sign in for professional sending: any schedule, more emails and follow-ups.',
       eLidhFillimisht: 'Choose a mailbox to send from first.',
       eHyr: 'Sign in for unlimited use',
+      eNjeProve: 'Free: one try per domain. Your email is written by AI from your domain.',
+      ePritDomainin: 'Enter your domain and study your business first: AI writes the email from it.',
     },
     sq: {
       shembull: 'Të dhëna shembull',
@@ -127,7 +129,7 @@
       kokaTeksti: '100% falas',
       sEyebrow: 'Falas · pa regjistrim',
       sPerKe: 'Për biznese B2B dhe B2C',
-      sNjeKerkim: 'Falas: një kërkim, postime nga 5 muajt e fundit.',
+      sNjeKerkim: 'Falas: një kërkim për domain, postime nga 5 muajt e fundit.',
       sHyr: 'Hyr për të marrë sinjalet më të fundit të interesit për biznesin tënd',
       sTitulli: 'Kush po kërkon atë që shet ti',
       sNen: 'Skanojmë bisedat publike në Reddit, Hacker News, Indie Hackers e të tjera, dhe AI të tregon njerëzit që kanë nevojë për produktin tënd tani.',
@@ -216,6 +218,8 @@
       eKufiri4: 'Në provën falas email-et duhet të jenë të paktën 4 orë larg njëri-tjetrit. Hyr në llogari për dërgim profesional: çdo orar, më shumë email-e dhe vazhdime.',
       eLidhFillimisht: 'Zgjidh fillimisht nga cili email do dërgosh.',
       eHyr: 'Hyr për përdorim të pakufizuar',
+      eNjeProve: 'Falas: një provë për domain. Email-in e shkruan AI nga domaini yt.',
+      ePritDomainin: 'Jep domainin dhe studio biznesin fillimisht: AI e shkruan email-in prej tij.',
     }
   };
 
@@ -434,6 +438,8 @@
     '.px-pjesa[data-zgjeruar] .px-vetem-ngushte{display:none}',
     '.px-pjesa:not([data-zgjeruar]) .px-vetem-gjere{display:none}',
     '.px-buton:disabled{opacity:.5;cursor:not-allowed;filter:none}',
+    '.px-input[readonly],.px-textarea[readonly]{background:var(--px-siperfaqja);color:var(--px-zbehur);cursor:not-allowed}',
+    '.px-fusha:disabled{opacity:.5;cursor:not-allowed}',
     '@container (min-width: 760px){ .px-pjesa[data-zgjeruar] .px-email-rreshti{grid-template-columns:1fr 1fr} }',
     // pershtatja me gjeresine e pjeses (opsionet shtese kur zgjerohet)
     '@container (min-width: 700px){',
@@ -631,6 +637,8 @@
   PxSinjaleEmail.prototype._htmlEmail = function () {
     var t = this._t.bind(this), gj = this._gjuha(), em = this._em, self = this;
     var d = em.domaini || t('eDomaini');
+    // Kusht: email-i vjen vetem nga domaini i studiuar me AI (nuk plotesohet me dore pa domain).
+    var gati = em.studim === 'gati';
     var emriKat = function (v) { var k = KATEGORITE.find(function (x) { return x.v === v; }); return k ? k[gj] : v; };
 
     // kategorite: te rekomanduarat (pas studimit me AI) dalin te parat
@@ -685,15 +693,17 @@
       '</div>' +
       '<button class="px-hyrje" data-e="hyr">' + SVG_HYRJE + '<span>' + esc(t('eHyr')) + '</span>' + SVG_DJATHTAS + '</button>' +
       '</div>' + stat +
+      '<p class="px-studio-stat" style="margin:-4px 0 12px">' + esc(t('eNjeProve')) + '</p>' +
 
       '<div class="px-email-rreshti">' +
       // 1. Mesazhi (me studimin e biznesit me AI ne versionin e gjere)
       '<div class="px-hapi"><div class="px-hapi-koka"><span class="px-nr">1</span><h3>' + esc(t('eMesazhi')) + '</h3></div>' +
       '<label class="px-etiketa">' + esc(t('eSubjekti')) + '</label>' +
-      '<input class="px-input" style="width:100%" data-e="subjekti" value="' + esc(em.subjekti == null ? t('eSubjektiVlera') : em.subjekti) + '">' +
-      '<div class="px-fushat">' + esc(t('eFusha')) + ' <button class="px-fusha" data-fusha="{company}">{company}</button><button class="px-fusha" data-fusha="{domain}">{domain}</button><button class="px-fusha" data-fusha="{first_name}">{first_name}</button></div>' +
+      '<input class="px-input" style="width:100%" data-e="subjekti"' + (gati ? '' : ' readonly') + ' placeholder="' + esc(t('eSubjektiVlera')) + '" value="' + esc(gati ? em.subjekti : '') + '">' +
+      '<div class="px-fushat">' + esc(t('eFusha')) + ' ' + ['{company}', '{domain}', '{first_name}'].map(function (f) { return '<button class="px-fusha" data-fusha="' + f + '"' + (gati ? '' : ' disabled') + '>' + f + '</button>'; }).join('') + '</div>' +
       '<label class="px-etiketa">' + esc(t('eTrupi')) + '</label>' +
-      '<textarea class="px-textarea" data-e="trupi">' + esc(em.trupi == null ? t('eTrupiVlera') : em.trupi) + '</textarea>' +
+      '<textarea class="px-textarea" data-e="trupi"' + (gati ? '' : ' readonly') + ' placeholder="' + esc(t('eTrupiVlera')) + '">' + esc(gati ? em.trupi : '') + '</textarea>' +
+      (gati ? '' : '<p class="px-studio-stat" style="margin:6px 0 0">' + esc(t('ePritDomainin')) + '</p>') +
       '<div class="px-vetem-gjere"><label class="px-etiketa" style="margin-top:10px">' + esc(t('eVazhdime')) + '</label>' +
       this._vazhdime.map(function (n) { return '<div class="px-vazhdim"><b>' + esc(t('eDita')) + ' ' + n + '</b><span>' + esc(t('eVazhdimiTekst')) + '</span></div>'; }).join('') +
       '<button class="px-buton px-buton-dyte" style="margin-top:8px" data-veprim="vazhdim">' + esc(t('eShtoVazhdim')) + '</button></div>' +
@@ -719,7 +729,7 @@
 
       // (Lidhja e email-it dergues behet vetem pas hyrjes ne llogari, ne panelin e perdoruesit.)
       njoftim +
-      '<div class="px-veprimi"><button class="px-buton" data-e="dergo"' + (!em.zgjedhur.length || kaKeq ? ' disabled' : '') + '>' + esc(t('eDergo')) + '</button>' +
+      '<div class="px-veprimi"><button class="px-buton" data-e="dergo"' + (!gati || !em.zgjedhur.length || kaKeq ? ' disabled' : '') + '>' + esc(t('eDergo')) + '</button>' +
       '<span class="px-falas">✓ ' + esc(t('eFalas')) + '</span></div>' +
       '<div class="px-shenim">' + esc(t('eLigjore')) + '</div>';
   };
