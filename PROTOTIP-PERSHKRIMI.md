@@ -1,12 +1,15 @@
-# Seksioni publik "Sinjalet + Dërgimi i email-eve" (PARA hyrjes në llogari)
+# Seksioni publik "Sinjalet + Dërgimi i email-eve": përshkrim udhëzues
 
-Ky dokument përshkruan vetëm përdorimin **pa login** (prova falas në faqen publike të phronexusai.com).
-Çfarë ndodh **pas hyrjes** (paneli i klientit, lidhja e email-it dërgues, dërgimi pa kufi, sinjalet çdo ditë)
-do të përshkruhet në një projekt ose bisedë tjetër.
+Ky dokument përshkruan:
+- **pjesën para hyrjes në llogari** (prova falas në faqen publike të phronexusai.com): seksionet 1–6;
+- **rregullat e sinjaleve pas hyrjes** (seksioni 7): vetëm logjika e kërkimit, sepse varet nga prova falas.
+  Paneli dhe dizajni pas hyrjes do të bëhen në një projekt ose bisedë tjetër.
 
 Gjendja: **prototip / vetëm strukturë**. Asgjë nuk lidhet me databazën, asgjë nuk dërgohet, asnjë kërkim nuk bëhet.
 Të dhënat që shihen (sinjale, biznese, numra) janë shembuj të shkruar në kod.
-Pjesët që shënohen **[PËR T'U NDËRTUAR]** do të plotësohen më vonë në projektin real.
+Pjesët që shënohen **[PËR T'U NDËRTUAR]** bëhen në projektin real.
+
+Ky dokument ka përparësi mbi `PLANI-KERKIMI.md` (seksioni 5) aty ku ndryshojnë.
 
 ---
 
@@ -21,7 +24,12 @@ Pjesët që shënohen **[PËR T'U NDËRTUAR]** do të plotësohen më vonë në 
 - Seksioni është një element i vetëm `<px-sinjale-email lang="en|sq">` me Shadow DOM: CSS-ja e tij nuk prek faqen dhe e kundërta.
 - I gjithë JS-i është brenda një IIFE. I vetmi emër global është `px-sinjale-email`, dhe para regjistrimit kontrollohet që nuk ekziston.
 - Ngjyrat janë variabla CSS (`--px-theks`, `--px-sfondi-email`, `--px-sfondi-sinjale` …) dhe ndryshohen në një vend, ose nga faqja: `px-sinjale-email { --px-theks: #xxxxxx; }`.
-- Seksioni i njofton faqen me ngjarjen `px-veprim` (`detail.veprimi` = `hyr`, `dergo`, `regjistrohu`, `hape` …). Projekti real e dëgjon këtë ngjarje, p.sh. për të hapur hyrjen.
+- Seksioni i njofton faqen me ngjarjen `px-veprim` (`detail.veprimi` = `hyr`, `dergo`, `regjistrohu`, `hape` …). Projekti real e dëgjon, p.sh. për të hapur hyrjen.
+
+**Ku ndërtohet logjika (propozim):** "motori" (kërkimi, AI, direktoria e bizneseve, tabela e provave, dërgimi) në projektin e email-eve,
+ku ekzistojnë tashmë `komunitete.js` dhe gjetja e email-eve. Te phronexusai.com shkojnë vetëm `prototip-px.js`, hyrja në llogari
+dhe një ndërmjetës në server që e thërret motorin me një çelës sekret (çelësat e Serper/OpenAI nuk dalin kurrë në shfletues).
+Nëse motori nuk përgjigjet, seksioni shfaq "Try again in a few minutes", jo gabim.
 
 ## 2. Pamja
 
@@ -46,12 +54,12 @@ Rendi nga lart poshtë:
 1. Titulli "Send emails to businesses that could become your customers" dhe shenja e dukshme **"Only for B2B"**.
 2. Statistikat (Sent / Replies / Unsubscribed), vetëm në versionin e gjerë.
 3. Rreshti i sipërm (vlen për mesazhin dhe për marrësit):
-   - **i ngushtë:** butoni "✦ Try it: generate your email with AI" + butoni "Sign in for unlimited use";
+   - **i ngushtë:** "✦ Try it: generate your email with AI" + "Sign in for unlimited use";
      klikimi i të parit e zgjeron pjesën dhe vendos kursorin te domaini;
    - **i gjerë:** "✦ Study my business with AI" + fusha e domainit + "Sign in for unlimited use".
    - Shënim: "Free: one try per domain. Your email is written by AI from your domain."
 4. **Kushti i domainit:** subjekti dhe mesazhi janë **të kyçur** (nuk shkruhen me dorë) derisa klienti të japë domainin dhe ta studiojë me AI.
-   Pas studimit AI i plotëson dhe klienti mund t'i ndryshojë. Butoni "Send" nuk aktivizohet pa këtë hap.
+   Pas studimit AI i plotëson dhe klienti mund t'i ndryshojë. "Send" nuk aktivizohet pa këtë hap.
 5. Dy blloqe, njëri poshtë tjetrit në versionin e ngushtë dhe paralel në të gjerin:
    - **1. Your email:** subjekti, fushat `{company}` `{domain}` `{first_name}`, mesazhi; vazhdimet (follow-ups) vetëm në versionin e gjerë.
    - **2. Recipients:**
@@ -67,60 +75,115 @@ Rendi nga lart poshtë:
 
 Nuk ka Gmail / Outlook / SMTP para hyrjes: lidhja e email-it dërgues bëhet vetëm pas login.
 
-## 4. Sinjalet (djathtas), për B2B dhe B2C
+## 4. Sinjalet (djathtas), për B2B dhe B2C: pamja
 
 1. Titulli "Who is looking for what you sell" dhe shenja **"For B2B and B2C businesses"**.
 2. **I ngushtë:** fusha e domainit është e fshehur; butoni "✦ Try it free: find interest signals with AI" e zgjeron pjesën dhe e shfaq fushën.
    **I gjerë:** fusha dhe butoni në një rresht.
 3. Shënim: "Free: one search per domain, posts from the last 5 months."
 4. Butoni "Sign in to get the latest interest signals for your business".
-5. Rezultatet shembull dhe filtrat (burimi, pikët, periudha) mbeten si janë. Butoni **nuk bën asnjë kërkim** (vetëm strukturë).
+5. Rezultatet dhe filtrat (burimi, pikët, periudha). **Shfaqen vetëm rezultatet me 40+ pikë** nga AI;
+   filtri i pikëve ka "All (40+)", "60+", "80+". Në prototip butoni nuk bën kërkim.
 6. **Domaini kalon nga email-et te sinjalet:** nëse klienti filloi me dërgimin e email-eve, domaini që dha atje plotësohet vetë te sinjalet.
    Jo anasjelltas, sepse një biznes B2C mund të përdorë sinjalet, por jo dërgimin e email-eve.
 
-## 5. Një provë falas për domain [PËR T'U NDËRTUAR në projektin real]
+## 5. Sinjalet PARA hyrjes: logjika e kërkimit [PËR T'U NDËRTUAR]
 
-Rregulli: pa login, **çdo domain** ka **një** provë për dërgimin e email-eve dhe **një** për sinjalet. Pas kësaj del vetëm hyrja.
+### 5.1 Analiza e domainit (një herë)
+1. Lexohet faqja kryesore e domainit (lexuesi i sigurt nga SSRF te `komunitete.js`).
+2. AI (gpt-5-nano) kthen:
+   - **përshkrimin** e produktit;
+   - **llojin:** `b2b` | `b2c` | `te-dyja`, plus **sigurinë** (e lartë / e ulët) dhe arsyen.
+     Kur siguria është e ulët, klientit i del konfirmim me një klik ("We think your customers are businesses (B2B). Correct?").
+     "Të dyja" trajtohet si B2B. [Propozim, pret miratim.]
+   - **7 terma**, të renditur nga më i miri te më i dobëti.
+3. **Termat nuk ndryshohen me dorë nga klienti**, as para as pas hyrjes.
 
-Propozim për ndërtimin:
+### 5.2 Kërkimi falas për B2B (një herë për domain)
+| Burimi | Si | Kosto |
+|---|---|---|
+| Reddit (Serper) | termi 1 veç, termi 2 veç: 2 kërkesa, faqja 1, 5 muajt e fundit | 2 kredite |
+| Indie Hackers (Serper, `site:indiehackers.com`) | termi 1 OR termi 2: 1 kërkesë, faqja 1, 5 muaj | 1 kredit |
+| Hacker News (Algolia, falas) | 7 termat me radhë, 5 muaj | falas |
+| Stack Exchange (API, falas) | 7 termat me radhë, në faqet e zgjedhura (p.sh. stackoverflow për produkte teknike, softwarerecs, webapps) | falas (nga kuota 10,000/ditë) |
+| Bluesky | **nuk përfshihet** para hyrjes, sepse e kemi vetëm "live" (Jetstream, vetëm postime të reja) | – |
 
-- **Tabela** (emri me parashtesë që të mos përplaset me të tjerat), p.sh. `px_prova_falas`:
-  - `domaini` (i normalizuar)
-  - `sherbimi` (`email` | `sinjale`)
-  - `krijuar_at`
-  - `ip_hash` (IP e koduar, jo IP e plotë, për privatësi)
-  - `rezultati` (JSON: sinjalet e gjetura, ose subjekti/mesazhi/marrësit/oret)
-  - `UNIQUE(domaini, sherbimi)`
-- **Normalizimi i domainit para kontrollit:** heq `http(s)://`, `www.`, rrugën dhe portin, kthen në shkronja të vogla,
-  merr domainin e regjistruar (`app.shembull.com` → `shembull.com`), që i njëjti biznes të mos provojë dy herë me nëndomain.
-  Te `server.js` ekziston tashmë `normalizoDomain(d)`; mund të përdoret ose të zgjerohet.
-- **Rrjedha:**
-  1. Klienti jep domainin dhe shtyp butonin e AI-së.
-  2. Serveri kontrollon tabelën. Nëse provës i ka ardhur radha, e bën dhe e ruan rezultatin.
-     Nëse domaini e ka përdorur, kthen rezultatin e ruajtur (pa kosto të re AI/Serper) dhe butonin e hyrjes.
-- **Mbrojtje nga abuzimi** (vendim i hapur):
-  - kufi për IP, p.sh. disa domaine në ditë;
-  - domaine të pavlefshme ose pa faqe (lexuesi i faqes dështon) nuk numërohen si provë;
-  - para dërgimit të email-eve, verifikimi i email-it të klientit (kod) mund të jetë edhe hapi i krijimit të llogarisë.
-- **Shënim:** dikush mund të japë domainin e një biznesi tjetër. Për sinjalet kjo nuk është problem i madh;
-  për email-et, dërgimi duhet të ketë "reply-to" të verifikuar dhe të mos lejojë t'i paraqitet si ai biznes.
+Gjithsej **3 kredite Serper** për provë, plus vlerësimi me AI.
 
-## 6. AI dhe shërbimet [PËR T'U NDËRTUAR]
+Arsyeja e kërkesave të veçanta: me disa terma me OR, Google kthen 10 rezultatet më të përshtatshme për gjithë kërkimin,
+dhe zakonisht fiton termi më i përdorur. Me Reddit + Indie Hackers bashkë, Reddit zë pothuajse të gjitha vendet.
 
-- **Studimi i biznesit:** lexohet faqja kryesore e domainit, me lexuesin e sigurt nga SSRF te `komunitete.js`.
-  - **gpt-5-nano:** përshkrimi, B2B/B2C dhe kategoritë e rekomanduara;
-  - **gpt-5-mini:** shkrimi i subjektit dhe mesazhit, ku cilësia e tekstit ka rëndësi.
-- **Sinjalet (prova falas):** një kërkim i vetëm me Serper (termat më të mira me OR), postime nga 5 muajt e fundit, faqja 1,
-  vlerësim me AI si te seksioni Komunitete. Plani i mëparshëm (`PLANI-KERKIMI.md`) thoshte 6 muaj: duhet njësuar.
-- **Dërgimi i 3 email-eve pa login:** nga adresa e dërgimit të platformës, në një nëndomain të veçantë
+**B2C:** [VENDIM I HAPUR] rrjedha për B2C para hyrjes nuk është përcaktuar ende (më parë: 1 kërkesë Reddit me 2 termat me OR, 1 kredit).
+
+### 5.3 Vlerësimi dhe shfaqja
+- **Çdo rezultat** vlerësohet me AI para se t'i shfaqet klientit: sa ia vlen t'i përgjigjet (0–100), si te seksioni Komunitete.
+- **Shfaqen vetëm ato me 40 e sipër**, jo të gjitha si te Komunitete.
+- Propozim kostoje: nëse HN dhe SE sjellin shumë postime, AI vlerëson vetëm rreth 30–40 më të rejat.
+
+### 5.4 Ruajtja, fshirja dhe "një herë për domain"
+- **Domaini normalizohet** para çdo kontrolli: pa `http(s)://`, `www.`, rrugë dhe port; shkronja të vogla; domaini i regjistruar
+  (`app.shembull.com` → `shembull.com`). Te `server.js` ekziston `normalizoDomain(d)`.
+- **Tabela e domaineve të përdorura** (ruhet përgjithmonë), p.sh. `px_prova_domaine`:
+  `domaini`, `sherbimi` (`sinjale` | `email`), `perdorur_at`, `UNIQUE(domaini, sherbimi)`.
+- **Rezultatet e provës** ruhen përkohësisht (p.sh. `px_prova_rezultate`), të lidhura me një **seancë**:
+  - `seanca` = kod i rastësishëm i krijuar në shfletues (cookie ose localStorage) kur fillon prova;
+  - `ip_hash` (IP e koduar, jo e plotë), `domaini`, `postimet` (JSON me vlerësimet), `aktiv_at` (aktiviteti i fundit).
+- **Nëse klienti hyn në llogari:** të gjitha rezultatet e seancës kalojnë te llogaria e tij, në tabelat që kemi
+  (`komunitete_postime` dhe të tjerat; duhet shtuar kolona e klientit, sepse tani janë për një klient), dhe nisin rregullat e seksionit 7.
+- **Nëse klienti largohet pa hyrë:** fshihen të gjitha rezultatet, mbetet vetëm domaini te `px_prova_domaine`.
+- **Si dallohet "u largua":** nuk ka mënyrë të sigurt që faqja ta dijë kur dikush ikën. Propozim:
+  - shfletuesi dërgon një sinjal të vogël "jam ende këtu" çdo disa minuta sa faqja është e hapur;
+  - fshirja automatike bëhet kur seanca s'ka aktivitet për një kohë, p.sh. **2 orë** (kufiri kohor vendoset ti);
+  - **kujdes me hyrjen me Google:** gjatë login hapet dritarja ose faqja e Google dhe sinjali ndalon për pak kohë.
+    Kjo nuk duhet ngatërruar me largimin: kodi i seancës mbetet në shfletues, dhe kur klienti kthehet nga Google
+    me të njëjtin kod, rezultatet i kalojnë llogarisë. Prandaj kufiri kohor duhet të jetë shumë më i gjatë se një hyrje.
+- **Herën e dytë me të njëjtin domain** (pa login): shfaqet mesazhi që prova falas për këtë domain është përdorur
+  dhe butoni "Sign in for unlimited use". **Pas hyrjes, studimi fillon nga e para** për të.
+- **Mbrojtje nga abuzimi:** kufi domainesh për IP në ditë; domainet pa faqe të lexueshme nuk numërohen si provë.
+
+## 6. AI dhe dërgimi para hyrjes [PËR T'U NDËRTUAR]
+
+- **Studimi i biznesit për email-et:** si te 5.1. gpt-5-nano për përshkrimin dhe kategoritë; **gpt-5-mini** për subjektin dhe mesazhin.
+- **Dërgimi i 3 email-eve falas:** nga adresa e dërgimit të platformës, në një nëndomain të veçantë
   (p.sh. `mail.phronexusai.com`, që domaini kryesor të mos dëmtohet), me "reply-to" email-in e verifikuar të klientit.
 - **Bizneset në direktori:** nga lista e domaineve (Common Crawl + gjetja e email-eve). Tani janë shembuj.
+- Prova e email-eve ndjek të njëjtin rregull "një herë për domain" (`sherbimi = 'email'`).
 
-## 7. Pyetje të hapura
+## 7. Sinjalet PAS hyrjes: rregullat e kërkimit [PËR T'U NDËRTUAR]
 
-- "Send in each recipient's time zone": vendi i biznesit nuk gjendet gjithmonë me siguri.
-  Propozim: hiqet, dhe shkruhet "Times are in your time zone (Europe/Berlin)".
-- Prova e sinjaleve: 5 apo 6 muaj? Filtri "Period" ka vetëm 7 dhe 30 ditë; të shtohet "Last 5 months"?
-- Butoni "Preview" i email-it, me dizajn të lehtë (tekst i pastër + nënshkrim profesional): po apo jo?
+Vlejnë për **çdo klient** (çdo llogari), me termat e tij që nuk ndryshohen me dorë.
+
+| Burimi | Shpeshtësia | Termat | Periudha |
+|---|---|---|---|
+| Reddit (Serper) | **çdo javë** | 2 terma, me radhë, secili kërkesë më vete | 7 ditët e fundit |
+| Indie Hackers (Serper) | **çdo 2 javë** | 1 term, me radhë | 14 ditët e fundit |
+| Hacker News (falas) | **çdo 6 orë** | të 7 termat | që nga kërkimi i fundit |
+| Stack Exchange (falas) | **çdo 6 orë** | të 7 termat, në faqet e zgjedhura | që nga kërkimi i fundit |
+| Bluesky (falas) | **live** (Jetstream, si te Njoftimet) | rregulla nga termat | në kohë reale |
+
+- **Rradha e Reddit-it me numër tek termash (7):** java 1 = termat 1+2, java 2 = 3+4, java 3 = 5+6, java 4 = **7+1** (termi i fundit me të parin),
+  dhe pastaj rifillon. [Për t'u konfirmuar: rifillon nga 2+3 (që çdo term të kërkohet njësoj shpesh) apo nga 1+2.]
+- **Kostoja Serper për klient:** Reddit ~2 kredite/javë + Indie Hackers ~1 kredit/2 javë ≈ **10–11 kredite në muaj**.
+- **Kujdes me kuotën e Stack Exchange:** 10,000 kërkesa/ditë për çelës. 7 terma × 2 faqe × 4 herë/ditë = 56 kërkesa/ditë për klient,
+  pra rreth 170 klientë për një çelës. Me më shumë klientë duhet ulur shpeshtësia ose numri i faqeve, ose shpërndarë ngarkesa.
+- **Shpërndarja e ngarkesës:** kërkimet e klientëve nuk nisen të gjitha në të njëjtën minutë, por shpërndahen gjatë orëve.
+- **Vlerësimi:** çdo postim i ri vlerësohet me AI; klientit i shfaqen vetëm ato me 40+.
+- **Email rikthimi:** nëse klienti ka hyrë të paktën një herë dhe nuk po hyn më (p.sh. 7 ditë), i dërgohet një email
+  me sinjalet e reja ("You have N new interest signals"), me lidhje hyrjeje dhe çregjistrim me një klik.
+  Jo më shpesh se një herë në javë. [Kufijtë kohorë për t'u vendosur.]
+- **Bluesky live** kërkon që rregullat e çdo klienti të ndërtohen nga termat e tij dhe postimet të ndahen sipas klientit;
+  te Njoftimet tani është për një përdorues të vetëm.
+
+## 8. Pyetje të hapura
+
+- B2B / B2C / të dyja + konfirmimi kur siguria është e ulët: miratohet?
+- Rrjedha e provës falas për **B2C**.
+- Rradha e Reddit pas javës 7+1: nga 2+3 apo nga 1+2?
+- Kufiri kohor para fshirjes së rezultateve të një seance pa login (propozim: 2 orë pa aktivitet).
+- Kur dërgohet email-i i rikthimit (pas sa ditësh) dhe sa shpesh.
+- Kërkimi i Bluesky për postime të vjetra (API `searchPosts`): të testohet nëse funksionon pa llogari.
+- "Send in each recipient's time zone": propozim të hiqet dhe të shkruhet "Times are in your time zone (…)".
+- Filtri "Period" ka 7 dhe 30 ditë; të shtohet "Last 5 months" për provën falas?
+- Butoni "Preview" i email-it, me dizajn të lehtë (tekst i pastër + nënshkrim profesional).
 - Teksti "Free · no sign-up" te Sinjalet përsërit header-in "100% free": mbetet apo hiqet?
-- Ngjyrat dhe fonti i phronexusai.com: ende të përkohshme.PROTOTIP-PERSHKRIMI.md
+- Ngjyrat dhe fonti i phronexusai.com: ende të përkohshme.
