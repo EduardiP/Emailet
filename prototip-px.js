@@ -35,7 +35,7 @@
       sTitulli: 'Who is looking for what you sell',
       sNen: 'We scan public conversations on Reddit, Hacker News, Indie Hackers and more, and AI shows you the people who need your product right now.',
       sDomain: 'yourcompany.com',
-      sGjej: 'Find signals',
+      sGjej: 'Try it free: find interest signals with AI',
       sDukeKerkuar: 'Scanning conversations…',
       sRezultatetPer: 'Results for',
       sShembullTitulli: 'Example results',
@@ -132,7 +132,7 @@
       sTitulli: 'Kush po kërkon atë që shet ti',
       sNen: 'Skanojmë bisedat publike në Reddit, Hacker News, Indie Hackers e të tjera, dhe AI të tregon njerëzit që kanë nevojë për produktin tënd tani.',
       sDomain: 'kompaniajote.com',
-      sGjej: 'Gjej sinjalet',
+      sGjej: 'Bëj provë falas: gjej sinjale interesi me AI',
       sDukeKerkuar: 'Po skanojmë bisedat…',
       sRezultatetPer: 'Rezultatet për',
       sShembullTitulli: 'Rezultate shembull',
@@ -568,8 +568,8 @@
       '<p class="px-nen">' + esc(t('sNen')) + '</p>' +
       '<div class="px-b2b">' + esc(t('sPerKe')) + '</div>' +
       '<form class="px-rresht" data-forma="sinjale">' +
-      '<input class="px-input" name="domain" type="text" inputmode="url" autocomplete="off" placeholder="' + esc(t('sDomain')) + '" value="' + esc(this._domaini) + '" aria-label="' + esc(t('sDomain')) + '">' +
-      '<button class="px-buton" type="submit">' + esc(t('sGjej')) + '</button>' +
+      '<input class="px-input px-vetem-gjere" name="domain" type="text" inputmode="url" autocomplete="off" placeholder="' + esc(t('sDomain')) + '" value="' + esc(this._domaini) + '" aria-label="' + esc(t('sDomain')) + '">' +
+      '<button class="px-buton" type="submit">✦ ' + esc(t('sGjej')) + '</button>' +
       '</form>' +
       // Prova falas: nje kerkim i vetem (sinjale te pergjithshme, 5 muajt e fundit). Sinjalet e reja cdo dite vetem pas hyrjes.
       '<p class="px-studio-stat" style="margin:6px 0 10px">' + esc(t('sNjeKerkim')) + '</p>' +
@@ -868,6 +868,11 @@
       // VETEM STRUKTURA: kerkimi i sinjaleve nuk eshte ndertuar ende, ndaj butoni nuk ben asnje kerkim.
       // Te dhenat dhe filtrat me poshte mbeten shembujt e njejte.
       if (!self._ePara) self._ePara = 'sinjale';
+      // Ne versionin e ngushte fusha e domainit eshte e fshehur: butoni e zgjeron pjesen dhe e shfaq fushen.
+      if (self._gjendja !== 'djathte') {
+        self._gjendja = 'djathte'; self._apliko();
+        setTimeout(function () { forma.domain.focus(); }, 480);
+      }
     });
     r.querySelector('[data-e="hyr-sinjale"]').addEventListener('click', function () {
       self.dispatchEvent(new CustomEvent('px-veprim', { detail: { veprimi: 'hyr', nga: 'sinjale' }, bubbles: true, composed: true }));
