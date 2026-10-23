@@ -30,6 +30,8 @@
       kokaTeksti: '100% free',
       sEyebrow: 'Free · no sign-up',
       sPerKe: 'For B2B and B2C businesses',
+      sNjeKerkim: 'Free: one search, posts from the last 5 months.',
+      sHyr: 'Sign in to get the latest interest signals for your business',
       sTitulli: 'Who is looking for what you sell',
       sNen: 'We scan public conversations on Reddit, Hacker News, Indie Hackers and more, and AI shows you the people who need your product right now.',
       sDomain: 'yourcompany.com',
@@ -125,6 +127,8 @@
       kokaTeksti: '100% falas',
       sEyebrow: 'Falas · pa regjistrim',
       sPerKe: 'Për biznese B2B dhe B2C',
+      sNjeKerkim: 'Falas: një kërkim, postime nga 5 muajt e fundit.',
+      sHyr: 'Hyr për të marrë sinjalet më të fundit të interesit për biznesin tënd',
       sTitulli: 'Kush po kërkon atë që shet ti',
       sNen: 'Skanojmë bisedat publike në Reddit, Hacker News, Indie Hackers e të tjera, dhe AI të tregon njerëzit që kanë nevojë për produktin tënd tani.',
       sDomain: 'kompaniajote.com',
@@ -401,7 +405,7 @@
     '.px-veprimet-siper{display:flex;gap:10px;align-items:stretch;flex-wrap:wrap;margin-bottom:12px}',
     '.px-provo{flex:1 1 240px;padding:12px 16px}',
     '.px-veprimet-siper .px-studio{flex:1 1 380px;margin:0}',
-    '.px-hyrje{flex:0 1 auto;display:inline-flex;align-items:center;justify-content:center;gap:10px;padding:11px 16px;border-radius:var(--px-rrezja-vogel);border:1px solid var(--px-teksti);background:var(--px-teksti);color:var(--px-sfondi);font-weight:600;cursor:pointer;white-space:nowrap;box-shadow:0 1px 2px rgba(20,22,37,.12),0 4px 12px rgba(20,22,37,.10);transition:transform .15s,box-shadow .15s}',
+    '.px-hyrje{flex:0 1 auto;max-width:100%;white-space:normal;text-align:left;display:inline-flex;align-items:center;justify-content:center;gap:10px;padding:11px 16px;border-radius:var(--px-rrezja-vogel);border:1px solid var(--px-teksti);background:var(--px-teksti);color:var(--px-sfondi);font-weight:600;cursor:pointer;box-shadow:0 1px 2px rgba(20,22,37,.12),0 4px 12px rgba(20,22,37,.10);transition:transform .15s,box-shadow .15s}',
     '.px-hyrje svg{width:17px;height:17px;flex:0 0 auto}',
     '.px-hyrje svg:last-child{width:15px;height:15px;opacity:.7;transition:transform .15s}',
     '.px-hyrje:hover{box-shadow:0 2px 4px rgba(20,22,37,.14),0 8px 20px rgba(20,22,37,.16)}',
@@ -567,6 +571,9 @@
       '<input class="px-input" name="domain" type="text" inputmode="url" autocomplete="off" placeholder="' + esc(t('sDomain')) + '" value="' + esc(this._domaini) + '" aria-label="' + esc(t('sDomain')) + '">' +
       '<button class="px-buton" type="submit">' + esc(t('sGjej')) + '</button>' +
       '</form>' +
+      // Prova falas: nje kerkim i vetem (sinjale te pergjithshme, 5 muajt e fundit). Sinjalet e reja cdo dite vetem pas hyrjes.
+      '<p class="px-studio-stat" style="margin:6px 0 10px">' + esc(t('sNjeKerkim')) + '</p>' +
+      '<button class="px-hyrje" data-e="hyr-sinjale" style="margin-bottom:4px">' + SVG_HYRJE + '<span>' + esc(t('sHyr')) + '</span>' + SVG_DJATHTAS + '</button>' +
       '<div class="px-info"><strong>' + (this._domaini ? esc(t('sRezultatetPer')) + ' ' + esc(this._domaini) : esc(t('sShembullTitulli'))) + ' <span class="px-shembull">' + esc(t('shembull')) + '</span></strong>' +
       '<span class="px-lloji"><b>B2B</b> · ' + esc(t('sLloji')) + '</span></div>' +
       '<div class="px-stat"><div><b>' + (SINJALE.length + 9) + '</b><span>' + esc(t('sStatJava')) + '</span></div>' +
@@ -861,6 +868,10 @@
       // VETEM STRUKTURA: kerkimi i sinjaleve nuk eshte ndertuar ende, ndaj butoni nuk ben asnje kerkim.
       // Te dhenat dhe filtrat me poshte mbeten shembujt e njejte.
       if (!self._ePara) self._ePara = 'sinjale';
+    });
+    r.querySelector('[data-e="hyr-sinjale"]').addEventListener('click', function () {
+      self.dispatchEvent(new CustomEvent('px-veprim', { detail: { veprimi: 'hyr', nga: 'sinjale' }, bubbles: true, composed: true }));
+      self._toast(self._t('eToast'));
     });
 
     r.querySelectorAll('[data-filtri]').forEach(function (s) {
