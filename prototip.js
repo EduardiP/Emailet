@@ -18,7 +18,11 @@ const TAB_JS = `(function () {
   panel.className = 'sec-panel'; panel.id = 'panelFaqjaPublike';
   panel.innerHTML = '<p class="mut">Prototipi i seksionit publik per phronexusai.com (te dhena shembull, nuk dergon asgje). ' +
     'Gjuha: <a href="#" data-gj="en">English</a> · <a href="#" data-gj="sq">Shqip</a> · <a href="/prototip" target="_blank">hape ne faqe te plote</a></p>' +
-    '<div style="background:#f3f4f8;padding:16px;border-radius:12px;"><px-sinjale-email lang="en"></px-sinjale-email></div>';
+    '<div class="pxGjere"><px-sinjale-email lang="en"></px-sinjale-email></div>';
+  // Seksioni del jashte gjeresise se kufizuar te faqes dhe zen gjithe ekranin, me rreth 24px distance ne skaje (pak me shume per shiritin e levizjes).
+  var st = document.createElement('style');
+  st.textContent = '.pxGjere{width:calc(100vw - 64px);position:relative;left:50%;transform:translateX(-50%)}';
+  document.head.appendChild(st);
   wrap.appendChild(panel);
 
   panel.querySelectorAll('[data-gj]').forEach(function (a) {
@@ -58,7 +62,7 @@ module.exports = function (app) {
 <title>Faqja publike · prototip</title>
 <style>
   body{margin:0;background:#f3f4f8;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-  .faqja{max-width:1200px;margin:0 auto;padding:32px 16px}
+  .faqja{padding:24px 24px}  /* gjithe gjeresia e ekranit, me pak distance nga skajet */
   .gjuha{display:flex;justify-content:flex-end;gap:8px;margin-bottom:12px;font-size:14px}
   .gjuha a{color:#4f46e5}
 </style></head>
