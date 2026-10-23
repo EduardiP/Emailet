@@ -581,7 +581,8 @@
     var rect = this.getBoundingClientRect(); if (!rect.width) return;
     var lart = rect.top + window.scrollY, vh = window.innerHeight;
     var h = lart < vh * 0.6 ? vh - lart - 24 : vh - 48;
-    px.style.setProperty('--px-lartesia', Math.max(460, Math.round(h)) + 'px');
+    // 1.8 = lartesia e ekranit te dukshem + 80% me shume (kerkese e perdoruesit, sepse ishte shume e ulet)
+    px.style.setProperty('--px-lartesia', Math.round(Math.max(460, h) * 1.8) + 'px');
   };
 
   // ---------- SEKSIONI I EMAIL-EVE ----------
