@@ -11,7 +11,7 @@
  *
  * Perdorimi:  <script src="/prototip-px.js"></script>  <px-sinjale-email lang="en"></px-sinjale-email>   (lang: "en" ose "sq")
  *
- * Ndarja horizontale: dy pjese te barabarta me shigjeta ‹ › ne mes.
+ * Ndarja horizontale: dy pjese te barabarta, ne mes  ‹ | ›  (vija ndarese me nje shigjete ne secilen ane).
  *  - "›" zgjeron pjesen e majte ne gjithe gjeresine (mbetet "‹" ne skajin e djathte).
  *  - "‹" zgjeron pjesen e djathte ne gjithe gjeresine (mbetet "›" ne skajin e majte).
  *  - Pas zgjerimit te pare nuk kthehet me ne ndarjen 50/50: shigjeta kalon nga njera pjese e plote te tjetra.
@@ -196,6 +196,9 @@
     { v: 'saas-ai', en: 'SaaS · AI tools', sq: 'SaaS · Mjete AI', n: 1530 },
     { v: 'agency', en: 'Agencies', sq: 'Agjenci', n: 408 }
   ];
+  // Shigjetat (ikona vektoriale, te mprehta ne cdo madhesi ekrani)
+  var SVG_MAJTAS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>';
+  var SVG_DJATHTAS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
   var VISIBLE_FALAS = 3; // sa sinjale shihen pa regjistrim
 
   var CSS = [
@@ -209,18 +212,23 @@
     '}',
     '*,*::before,*::after{box-sizing:border-box}',
     'button,input,select,textarea{font:inherit;color:inherit}',
-    '.px{position:relative;background:var(--px-sfondi);border:1px solid var(--px-kufiri);border-radius:var(--px-rrezja);box-shadow:var(--px-hija);overflow:hidden}',
+    '.px{position:relative;background:var(--px-sfondi);border:1px solid var(--px-kufiri);border-radius:var(--px-rrezja);box-shadow:var(--px-hija);overflow:clip}',
     '.px-korniza{display:flex;min-height:var(--px-lartesia)}',
-    '.px-pjesa{flex:0 0 calc(50% - 22px);min-width:0;overflow:hidden;container-type:inline-size;transition:flex-basis .45s cubic-bezier(.4,0,.2,1),opacity .3s ease}',
-    '.px[data-gjendja="majte"] .px-pjesa-majte,.px[data-gjendja="djathte"] .px-pjesa-djathte{flex-basis:calc(100% - 44px)}',
+    '.px-pjesa{flex:0 0 calc(50% - 36px);min-width:0;overflow:hidden;container-type:inline-size;transition:flex-basis .45s cubic-bezier(.4,0,.2,1),opacity .3s ease}',
+    '.px[data-gjendja="majte"] .px-pjesa-majte,.px[data-gjendja="djathte"] .px-pjesa-djathte{flex-basis:calc(100% - 72px)}',
     '.px[data-gjendja="majte"] .px-pjesa-djathte,.px[data-gjendja="djathte"] .px-pjesa-majte{flex-basis:0;opacity:0}',
     '.px-brenda{padding:28px;min-width:300px;height:100%;overflow-y:auto}',
     // ndaresi me shigjeta
-    '.px-ndaresi{flex:0 0 44px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;background:var(--px-siperfaqja);border-left:1px solid var(--px-kufiri);border-right:1px solid var(--px-kufiri)}',
-    '.px-shigjeta{width:32px;height:32px;border-radius:50%;border:1px solid var(--px-kufiri);background:var(--px-sfondi);cursor:pointer;display:grid;place-items:center;font-size:18px;line-height:1;color:var(--px-teksti);transition:background .15s,border-color .15s,transform .15s}',
-    '.px-shigjeta:hover{border-color:var(--px-theks);color:var(--px-theks);transform:scale(1.06)}',
+    // pamja:  ‹ | ›   (vija ndarese ne mes, nje shigjete ne secilen ane; mbeten ne mes te ekranit kur faqja leviz)
+    '.px-ndaresi{position:relative;flex:0 0 72px;display:flex;flex-direction:column;justify-content:flex-start;align-items:center}',
+    '.px-ndaresi::before{content:"";position:absolute;top:0;bottom:0;left:50%;width:1px;transform:translateX(-50%);background:var(--px-kufiri)}',
+    '.px-shigjetat{position:sticky;top:calc(50vh - 15px);margin-top:calc(var(--px-lartesia) / 2 - 15px);display:flex;align-items:center;gap:16px}',
+    '.px-shigjeta{width:30px;height:30px;padding:0;border-radius:50%;border:1px solid var(--px-kufiri);background:var(--px-sfondi);color:var(--px-zbehur);cursor:pointer;display:grid;place-items:center;box-shadow:0 1px 2px rgba(20,22,37,.08),0 2px 8px rgba(20,22,37,.06);transition:color .15s,border-color .15s,box-shadow .15s,transform .15s}',
+    '.px-shigjeta svg{width:16px;height:16px;display:block}',
+    '.px-shigjeta:hover{color:var(--px-theks);border-color:var(--px-theks);box-shadow:0 0 0 3px var(--px-theks-lehte)}',
+    '.px-shigjeta:active{transform:scale(.94)}',
     '.px-shigjeta:focus-visible{outline:2px solid var(--px-theks);outline-offset:2px}',
-    '.px-shigjeta[hidden]{display:none}',
+    '.px-shigjeta[hidden]{display:grid;visibility:hidden}',
     // tipografia
     '.px-eyebrow{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--px-theks);background:var(--px-theks-lehte);padding:4px 10px;border-radius:999px}',
     'h2{font-size:24px;line-height:1.25;margin:12px 0 6px;letter-spacing:-.01em}',
@@ -433,8 +441,10 @@
 
       // ---------- NDARESI ME SHIGJETA ----------
       '<div class="px-ndaresi">' +
-      '<button class="px-shigjeta" data-shigjeta="djathtas" aria-label="' + esc(t('shigjetaDjathtas')) + '" title="' + esc(t('shigjetaDjathtas')) + '">›</button>' +
-      '<button class="px-shigjeta" data-shigjeta="majtas" aria-label="' + esc(t('shigjetaMajtas')) + '" title="' + esc(t('shigjetaMajtas')) + '">‹</button>' +
+      '<div class="px-shigjetat">' +
+      '<button class="px-shigjeta" data-shigjeta="majtas" aria-label="' + esc(t('shigjetaMajtas')) + '" title="' + esc(t('shigjetaMajtas')) + '">' + SVG_MAJTAS + '</button>' +
+      '<button class="px-shigjeta" data-shigjeta="djathtas" aria-label="' + esc(t('shigjetaDjathtas')) + '" title="' + esc(t('shigjetaDjathtas')) + '">' + SVG_DJATHTAS + '</button>' +
+      '</div>' +
       '</div>' +
 
       // ---------- PJESA E DJATHTE: EMAIL-ET ----------
