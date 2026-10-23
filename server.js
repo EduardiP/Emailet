@@ -13,6 +13,7 @@ const SERPER_KEY = process.env.SERPER_API_KEY;
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
 // Seksioni "Komunitete" (Hacker News + Stack Exchange): rruget dhe tabelat jane te komunitete.js, faqja te komunitete-client.js.
 require('./komunitete')(app, pool);
+require('./prototip')(app);
 
 pool.query(`CREATE TABLE IF NOT EXISTS bizneset_gjetur (
   id SERIAL PRIMARY KEY,
