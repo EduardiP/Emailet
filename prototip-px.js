@@ -29,6 +29,7 @@
       shigjetaDjathtas: 'Show sending in full width',
       kokaTeksti: '100% free',
       sEyebrow: 'Free · no sign-up',
+      sPerKe: 'For B2B and B2C businesses',
       sTitulli: 'Who is looking for what you sell',
       sNen: 'We scan public conversations on Reddit, Hacker News, Indie Hackers and more, and AI shows you the people who need your product right now.',
       sDomain: 'yourcompany.com',
@@ -123,6 +124,7 @@
       shigjetaDjathtas: 'Shfaq dërgimin në gjithë gjerësinë',
       kokaTeksti: '100% falas',
       sEyebrow: 'Falas · pa regjistrim',
+      sPerKe: 'Për biznese B2B dhe B2C',
       sTitulli: 'Kush po kërkon atë që shet ti',
       sNen: 'Skanojmë bisedat publike në Reddit, Hacker News, Indie Hackers e të tjera, dhe AI të tregon njerëzit që kanë nevojë për produktin tënd tani.',
       sDomain: 'kompaniajote.com',
@@ -296,7 +298,12 @@
     '.px-korniza{display:flex;flex:1 1 auto;min-height:0}',
     '.px-pjesa{flex:0 0 calc(50% - 36px);min-width:0;overflow:hidden;container-type:inline-size;transition:flex-basis .45s cubic-bezier(.4,0,.2,1),opacity .3s ease}',
     '.px[data-gjendja="majte"] .px-pjesa-majte,.px[data-gjendja="djathte"] .px-pjesa-djathte{flex-basis:calc(100% - 72px)}',
-    '.px[data-gjendja="majte"] .px-pjesa-djathte,.px[data-gjendja="djathte"] .px-pjesa-majte{flex-basis:0;opacity:0}',
+    '.px[data-gjendja="majte"] .px-pjesa-djathte,.px[data-gjendja="djathte"] .px-pjesa-majte{flex-basis:0;opacity:0;height:0;align-self:flex-start}',
+    // pjesa e zgjeruar: lartesia sa permbajtja, pa shirit levizje te brendshem; leviz faqja (shigjeta mbetet ne mes te ekranit)
+    '.px:not([data-gjendja="ndare"]){height:auto}',
+    '.px:not([data-gjendja="ndare"]) .px-brenda{height:auto;overflow:visible}',
+    '.px:not([data-gjendja="ndare"]) .px-ndaresi{justify-content:flex-start}',
+    '.px:not([data-gjendja="ndare"]) .px-shigjetat{position:sticky;top:calc(50vh - 15px);margin-top:min(35vh, 300px)}',
     '.px-brenda{padding:28px;min-width:300px;height:100%;overflow-y:auto}',
     // ndaresi me shigjeta
     // pamja:  ‹ | ›   (vija ndarese ne mes, nje shigjete ne secilen ane, ne mes te lartesise)
@@ -555,6 +562,7 @@
       '<span class="px-eyebrow">' + esc(t('sEyebrow')) + '</span>' +
       '<h2>' + esc(t('sTitulli')) + '</h2>' +
       '<p class="px-nen">' + esc(t('sNen')) + '</p>' +
+      '<div class="px-b2b">' + esc(t('sPerKe')) + '</div>' +
       '<form class="px-rresht" data-forma="sinjale">' +
       '<input class="px-input" name="domain" type="text" inputmode="url" autocomplete="off" placeholder="' + esc(t('sDomain')) + '" value="' + esc(this._domaini) + '" aria-label="' + esc(t('sDomain')) + '">' +
       '<button class="px-buton" type="submit">' + esc(t('sGjej')) + '</button>' +
@@ -723,6 +731,7 @@
 
     var provo = q('[data-e="provo"]');
     if (provo) provo.addEventListener('click', function () {
+      if (!self._ePara) self._ePara = 'email';
       self._gjendja = 'majte'; self._apliko();
       setTimeout(function () { var i = q('[data-e="domaini"]'); if (i) i.focus(); }, 480);
     });
@@ -735,6 +744,7 @@
     q('[data-e="studio"]').addEventListener('click', function () {
       var d = String(dom.value || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
       if (!d) { dom.focus(); return; }
+      if (!self._ePara) self._ePara = 'email';
       em.domaini = d; em.studim = 'duke'; self._rivizatoEmail();
       setTimeout(function () {
         var emri = d.split('.')[0]; emri = emri.charAt(0).toUpperCase() + emri.slice(1);
@@ -814,6 +824,12 @@
     var fshih = function (el, po) { if (po) { el.setAttribute('inert', ''); el.setAttribute('aria-hidden', 'true'); } else { el.removeAttribute('inert'); el.removeAttribute('aria-hidden'); } };
     if (g === 'majte') majte.setAttribute('data-zgjeruar', ''); else majte.removeAttribute('data-zgjeruar');
     if (g === 'djathte') djathte.setAttribute('data-zgjeruar', ''); else djathte.removeAttribute('data-zgjeruar');
+    // Nese klienti filloi me dergimin e email-eve, domaini qe dha atje plotesohet edhe te kerkimi i sinjaleve.
+    // (Jo anasjelltas: nje biznes B2C mund te perdore sinjalet, por jo dergimin e email-eve.)
+    if (g === 'djathte' && this._ePara === 'email' && this._em && this._em.domaini) {
+      var inp = r.querySelector('[data-forma="sinjale"] input[name="domain"]');
+      if (inp && !inp.value) inp.value = this._em.domaini;
+    }
     fshih(majte, g === 'djathte');
     fshih(djathte, g === 'majte');
   };
@@ -832,6 +848,7 @@
     r.querySelectorAll('[data-shigjeta]').forEach(function (b) {
       b.addEventListener('click', function () {
         self._gjendja = b.getAttribute('data-shigjeta') === 'djathtas' ? 'majte' : 'djathte';
+        if (!self._ePara) self._ePara = self._gjendja === 'majte' ? 'email' : 'sinjale';
         self._apliko();
         var tjetri = r.querySelector('[data-shigjeta]:not([hidden])');
         if (tjetri) tjetri.focus();
@@ -841,10 +858,9 @@
     var forma = r.querySelector('[data-forma="sinjale"]');
     forma.addEventListener('submit', function (ev) {
       ev.preventDefault();
-      var d = String(forma.domain.value || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
-      var vendi = r.querySelector('[data-vendi="sinjalet"]');
-      vendi.innerHTML = '<div class="px-ngarkim">' + esc(self._t('sDukeKerkuar')) + '</div>';
-      setTimeout(function () { self._domaini = d; self._vizato(); }, 900); // prototip: rezultatet jane shembuj
+      // VETEM STRUKTURA: kerkimi i sinjaleve nuk eshte ndertuar ende, ndaj butoni nuk ben asnje kerkim.
+      // Te dhenat dhe filtrat me poshte mbeten shembujt e njejte.
+      if (!self._ePara) self._ePara = 'sinjale';
     });
 
     r.querySelectorAll('[data-filtri]').forEach(function (s) {
