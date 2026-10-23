@@ -11,6 +11,7 @@
  *
  * Perdorimi:  <script src="/prototip-px.js"></script>  <px-sinjale-email lang="en"></px-sinjale-email>   (lang: "en" ose "sq")
  *
+ * Majtas: Dergimi i email-eve. Djathtas: Sinjalet. Siper: header i perbashket ("100% free").
  * Ndarja horizontale: dy pjese te barabarta, ne mes  ‹ | ›  (vija ndarese me nje shigjete ne secilen ane).
  *  - "›" zgjeron pjesen e majte ne gjithe gjeresine (mbetet "‹" ne skajin e djathte).
  *  - "‹" zgjeron pjesen e djathte ne gjithe gjeresine (mbetet "›" ne skajin e majte).
@@ -24,8 +25,9 @@
   var TEKSTET = {
     en: {
       shembull: 'Example data',
-      shigjetaMajtas: 'Show sending in full width',
-      shigjetaDjathtas: 'Show signals in full width',
+      shigjetaMajtas: 'Show signals in full width',
+      shigjetaDjathtas: 'Show sending in full width',
+      kokaTeksti: '100% free',
       sEyebrow: 'Free · no sign-up',
       sTitulli: 'Who is looking for what you sell',
       sNen: 'We scan public conversations on Reddit, Hacker News, Indie Hackers and more, and AI shows you the people who need your product right now.',
@@ -91,8 +93,9 @@
     },
     sq: {
       shembull: 'Të dhëna shembull',
-      shigjetaMajtas: 'Shfaq dërgimin në gjithë gjerësinë',
-      shigjetaDjathtas: 'Shfaq sinjalet në gjithë gjerësinë',
+      shigjetaMajtas: 'Shfaq sinjalet në gjithë gjerësinë',
+      shigjetaDjathtas: 'Shfaq dërgimin në gjithë gjerësinë',
+      kokaTeksti: '100% falas',
       sEyebrow: 'Falas · pa regjistrim',
       sTitulli: 'Kush po kërkon atë që shet ti',
       sNen: 'Skanojmë bisedat publike në Reddit, Hacker News, Indie Hackers e të tjera, dhe AI të tregon njerëzit që kanë nevojë për produktin tënd tani.',
@@ -204,6 +207,7 @@
   var CSS = [
     ':host{',
     // ---- Ngjyrat dhe stili (ndryshoji ketu, ose nga jashte me --px-... ) ----
+    '  --px-sfondi-sinjale:#e3e9f2; --px-sfondi-email:#eff3f8;',
     '  --px-sfondi:#ffffff; --px-siperfaqja:#f6f7fb; --px-kufiri:#e4e6ef; --px-teksti:#141625; --px-zbehur:#62667a;',
     '  --px-theks:#4f46e5; --px-theks-teksti:#ffffff; --px-theks-lehte:#eef0ff; --px-sukses:#0f9d6b; --px-paralajmerim:#c27803;',
     '  --px-rrezja:14px; --px-rrezja-vogel:9px; --px-hija:0 1px 2px rgba(20,22,37,.06),0 8px 24px rgba(20,22,37,.06);',
@@ -212,7 +216,11 @@
     '}',
     '*,*::before,*::after{box-sizing:border-box}',
     'button,input,select,textarea{font:inherit;color:inherit}',
-    '.px{position:relative;background:var(--px-sfondi);border:1px solid var(--px-kufiri);border-radius:var(--px-rrezja);box-shadow:var(--px-hija);overflow:clip}',
+    // e gjere sa ekrani, pa kornize "tabele"; ngjyra e sfondit ndan dy seksionet
+    '.px{position:relative;background:var(--px-sfondi);overflow:clip}',
+    '.px-koka{padding:14px 24px;text-align:center;font-size:15px;font-weight:700;letter-spacing:.02em;color:var(--px-theks);background:var(--px-sfondi);border-bottom:1px solid var(--px-kufiri)}',
+    '.px-pjesa-email{background:var(--px-sfondi-email)}',
+    '.px-pjesa-sinjale{background:var(--px-sfondi-sinjale)}',
     '.px-korniza{display:flex;min-height:var(--px-lartesia)}',
     '.px-pjesa{flex:0 0 calc(50% - 36px);min-width:0;overflow:hidden;container-type:inline-size;transition:flex-basis .45s cubic-bezier(.4,0,.2,1),opacity .3s ease}',
     '.px[data-gjendja="majte"] .px-pjesa-majte,.px[data-gjendja="djathte"] .px-pjesa-djathte{flex-basis:calc(100% - 72px)}',
@@ -220,7 +228,7 @@
     '.px-brenda{padding:28px;min-width:300px;height:100%;overflow-y:auto}',
     // ndaresi me shigjeta
     // pamja:  ‹ | ›   (vija ndarese ne mes, nje shigjete ne secilen ane; mbeten ne mes te ekranit kur faqja leviz)
-    '.px-ndaresi{position:relative;flex:0 0 72px;display:flex;flex-direction:column;justify-content:flex-start;align-items:center}',
+    '.px-ndaresi{position:relative;flex:0 0 72px;background:linear-gradient(to right,var(--px-sfondi-email) 50%,var(--px-sfondi-sinjale) 50%);display:flex;flex-direction:column;justify-content:flex-start;align-items:center}',
     '.px-ndaresi::before{content:"";position:absolute;top:0;bottom:0;left:50%;width:1px;transform:translateX(-50%);background:var(--px-kufiri)}',
     '.px-shigjetat{position:sticky;top:calc(50vh - 15px);margin-top:calc(var(--px-lartesia) / 2 - 15px);display:flex;align-items:center;gap:16px}',
     '.px-shigjeta{width:30px;height:30px;padding:0;border-radius:50%;border:1px solid var(--px-kufiri);background:var(--px-sfondi);color:var(--px-zbehur);cursor:pointer;display:grid;place-items:center;box-shadow:0 1px 2px rgba(20,22,37,.08),0 2px 8px rgba(20,22,37,.06);transition:color .15s,border-color .15s,box-shadow .15s,transform .15s}',
@@ -411,44 +419,12 @@
     this._rrenja.innerHTML =
       '<style>' + CSS + '</style>' +
       '<section class="px" data-gjendja="' + this._gjendja + '">' +
+      // ---------- HEADER I PERBASHKET ----------
+      '<header class="px-koka">' + esc(t('kokaTeksti')) + '</header>' +
       '<div class="px-korniza">' +
 
-      // ---------- PJESA E MAJTE: SINJALET ----------
-      '<div class="px-pjesa px-pjesa-majte" id="pjesaMajte">' +
-      '<div class="px-brenda">' +
-      '<span class="px-eyebrow">' + esc(t('sEyebrow')) + '</span>' +
-      '<h2>' + esc(t('sTitulli')) + '</h2>' +
-      '<p class="px-nen">' + esc(t('sNen')) + '</p>' +
-      '<form class="px-rresht" data-forma="sinjale">' +
-      '<input class="px-input" name="domain" type="text" inputmode="url" autocomplete="off" placeholder="' + esc(t('sDomain')) + '" value="' + esc(this._domaini) + '" aria-label="' + esc(t('sDomain')) + '">' +
-      '<button class="px-buton" type="submit">' + esc(t('sGjej')) + '</button>' +
-      '</form>' +
-      '<div class="px-info"><strong>' + (this._domaini ? esc(t('sRezultatetPer')) + ' ' + esc(this._domaini) : esc(t('sShembullTitulli'))) + ' <span class="px-shembull">' + esc(t('shembull')) + '</span></strong>' +
-      '<span class="px-lloji"><b>B2B</b> · ' + esc(t('sLloji')) + '</span></div>' +
-      '<div class="px-stat"><div><b>' + (SINJALE.length + 9) + '</b><span>' + esc(t('sStatJava')) + '</span></div>' +
-      '<div><b>' + teMira + '</b><span>' + esc(t('sStatTeMira')) + '</span></div>' +
-      '<div><b>' + burimet.length + '</b><span>' + esc(t('sStatBurime')) + '</span></div></div>' +
-      '<div class="px-filtrat" role="group" aria-label="' + esc(t('sFiltri')) + '">' +
-      '<div><label class="px-etiketa">' + esc(t('sBurimi')) + '</label><select class="px-select" data-filtri="burimi"><option value="">' + esc(t('sTeGjitha')) + '</option>' +
-      burimet.map(function (b) { return '<option' + (self._filtri.burimi === b ? ' selected' : '') + '>' + esc(b) + '</option>'; }).join('') + '</select></div>' +
-      '<div><label class="px-etiketa">' + esc(t('sPikeMin')) + '</label><select class="px-select" data-filtri="min">' +
-      [[0, t('sCdoPike')], [60, '60+'], [80, '80+']].map(function (o) { return '<option value="' + o[0] + '"' + (self._filtri.min === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('') + '</select></div>' +
-      '<div><label class="px-etiketa">' + esc(t('sPeriudha')) + '</label><select class="px-select" data-filtri="dite">' +
-      [[7, t('sJava')], [30, t('sMuaji')]].map(function (o) { return '<option value="' + o[0] + '"' + (self._filtri.dite === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('') + '</select></div>' +
-      '</div>' +
-      '<div data-vendi="sinjalet">' + this._htmlSinjalet() + '</div>' +
-      '</div></div>' +
-
-      // ---------- NDARESI ME SHIGJETA ----------
-      '<div class="px-ndaresi">' +
-      '<div class="px-shigjetat">' +
-      '<button class="px-shigjeta" data-shigjeta="majtas" aria-label="' + esc(t('shigjetaMajtas')) + '" title="' + esc(t('shigjetaMajtas')) + '">' + SVG_MAJTAS + '</button>' +
-      '<button class="px-shigjeta" data-shigjeta="djathtas" aria-label="' + esc(t('shigjetaDjathtas')) + '" title="' + esc(t('shigjetaDjathtas')) + '">' + SVG_DJATHTAS + '</button>' +
-      '</div>' +
-      '</div>' +
-
-      // ---------- PJESA E DJATHTE: EMAIL-ET ----------
-      '<div class="px-pjesa px-pjesa-djathte" id="pjesaDjathte">' +
+      // ---------- PJESA E MAJTE: EMAIL-ET ----------
+      '<div class="px-pjesa px-pjesa-majte px-pjesa-email" id="pjesaMajte">' +
       '<div class="px-brenda">' +
       '<span class="px-eyebrow">' + esc(t('eEyebrow')) + '</span> <span class="px-shembull">' + esc(t('shembull')) + '</span>' +
       '<h2>' + esc(t('eTitulli')) + '</h2>' +
@@ -497,6 +473,40 @@
       '</div>' +
 
       '</div></div></div>' +
+
+      // ---------- NDARESI ME SHIGJETA ----------
+      '<div class="px-ndaresi">' +
+      '<div class="px-shigjetat">' +
+      '<button class="px-shigjeta" data-shigjeta="majtas" aria-label="' + esc(t('shigjetaMajtas')) + '" title="' + esc(t('shigjetaMajtas')) + '">' + SVG_MAJTAS + '</button>' +
+      '<button class="px-shigjeta" data-shigjeta="djathtas" aria-label="' + esc(t('shigjetaDjathtas')) + '" title="' + esc(t('shigjetaDjathtas')) + '">' + SVG_DJATHTAS + '</button>' +
+      '</div>' +
+      '</div>' +
+
+      // ---------- PJESA E DJATHTE: SINJALET ----------
+      '<div class="px-pjesa px-pjesa-djathte px-pjesa-sinjale" id="pjesaDjathte">' +
+      '<div class="px-brenda">' +
+      '<span class="px-eyebrow">' + esc(t('sEyebrow')) + '</span>' +
+      '<h2>' + esc(t('sTitulli')) + '</h2>' +
+      '<p class="px-nen">' + esc(t('sNen')) + '</p>' +
+      '<form class="px-rresht" data-forma="sinjale">' +
+      '<input class="px-input" name="domain" type="text" inputmode="url" autocomplete="off" placeholder="' + esc(t('sDomain')) + '" value="' + esc(this._domaini) + '" aria-label="' + esc(t('sDomain')) + '">' +
+      '<button class="px-buton" type="submit">' + esc(t('sGjej')) + '</button>' +
+      '</form>' +
+      '<div class="px-info"><strong>' + (this._domaini ? esc(t('sRezultatetPer')) + ' ' + esc(this._domaini) : esc(t('sShembullTitulli'))) + ' <span class="px-shembull">' + esc(t('shembull')) + '</span></strong>' +
+      '<span class="px-lloji"><b>B2B</b> · ' + esc(t('sLloji')) + '</span></div>' +
+      '<div class="px-stat"><div><b>' + (SINJALE.length + 9) + '</b><span>' + esc(t('sStatJava')) + '</span></div>' +
+      '<div><b>' + teMira + '</b><span>' + esc(t('sStatTeMira')) + '</span></div>' +
+      '<div><b>' + burimet.length + '</b><span>' + esc(t('sStatBurime')) + '</span></div></div>' +
+      '<div class="px-filtrat" role="group" aria-label="' + esc(t('sFiltri')) + '">' +
+      '<div><label class="px-etiketa">' + esc(t('sBurimi')) + '</label><select class="px-select" data-filtri="burimi"><option value="">' + esc(t('sTeGjitha')) + '</option>' +
+      burimet.map(function (b) { return '<option' + (self._filtri.burimi === b ? ' selected' : '') + '>' + esc(b) + '</option>'; }).join('') + '</select></div>' +
+      '<div><label class="px-etiketa">' + esc(t('sPikeMin')) + '</label><select class="px-select" data-filtri="min">' +
+      [[0, t('sCdoPike')], [60, '60+'], [80, '80+']].map(function (o) { return '<option value="' + o[0] + '"' + (self._filtri.min === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('') + '</select></div>' +
+      '<div><label class="px-etiketa">' + esc(t('sPeriudha')) + '</label><select class="px-select" data-filtri="dite">' +
+      [[7, t('sJava')], [30, t('sMuaji')]].map(function (o) { return '<option value="' + o[0] + '"' + (self._filtri.dite === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('') + '</select></div>' +
+      '</div>' +
+      '<div data-vendi="sinjalet">' + this._htmlSinjalet() + '</div>' +
+      '</div></div>' +
 
       '</div>' +
       '<div class="px-toast" role="status" aria-live="polite"></div>' +
