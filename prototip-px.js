@@ -47,7 +47,7 @@
       sBurimi: 'Source',
       sTeGjitha: 'All sources',
       sPikeMin: 'Min. score',
-      sCdoPike: 'Any score',
+      sCdoPike: 'All (40+)',
       sPeriudha: 'Period',
       sJava: 'Last 7 days',
       sMuaji: 'Last 30 days',
@@ -146,7 +146,7 @@
       sBurimi: 'Burimi',
       sTeGjitha: 'Të gjitha burimet',
       sPikeMin: 'Pikë min.',
-      sCdoPike: 'Çdo pikë',
+      sCdoPike: 'Të gjitha (40+)',
       sPeriudha: 'Periudha',
       sJava: '7 ditët e fundit',
       sMuaji: '30 ditët e fundit',
@@ -478,7 +478,7 @@
       this._rrenja = this.attachShadow({ mode: 'open' });
       this._gjendja = 'ndare';          // 'ndare' | 'majte' | 'djathte'
       this._domaini = '';
-      this._filtri = { burimi: '', min: 0, dite: 30 };
+      this._filtri = { burimi: '', min: 40, dite: 30 }; // shfaqen vetem rezultatet me 40+ pike nga AI
       this._lidhur = '';
       this._kategoria = ''; // '' = te gjitha kategorite (me te rejat ne fillim)
       this._vazhdime = [3, 7];
@@ -514,7 +514,7 @@
   PxSinjaleEmail.prototype._htmlSinjalet = function () {
     var t = this._t.bind(this), f = this._filtri, gj = this._gjuha();
     var lista = SINJALE.filter(function (s) {
-      return (!f.burimi || s.burimi === f.burimi) && s.pike >= f.min && s.dite <= f.dite;
+      return s.pike >= 40 && (!f.burimi || s.burimi === f.burimi) && s.pike >= f.min && s.dite <= f.dite;
     }).sort(function (a, b) { return b.pike - a.pike; });
     var burimet = Array.from(new Set(SINJALE.map(function (s) { return s.burimi; })));
     var karta = function (s) {
@@ -589,7 +589,7 @@
       '<div><label class="px-etiketa">' + esc(t('sBurimi')) + '</label><select class="px-select" data-filtri="burimi"><option value="">' + esc(t('sTeGjitha')) + '</option>' +
       burimet.map(function (b) { return '<option' + (self._filtri.burimi === b ? ' selected' : '') + '>' + esc(b) + '</option>'; }).join('') + '</select></div>' +
       '<div><label class="px-etiketa">' + esc(t('sPikeMin')) + '</label><select class="px-select" data-filtri="min">' +
-      [[0, t('sCdoPike')], [60, '60+'], [80, '80+']].map(function (o) { return '<option value="' + o[0] + '"' + (self._filtri.min === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('') + '</select></div>' +
+      [[40, t('sCdoPike')], [60, '60+'], [80, '80+']].map(function (o) { return '<option value="' + o[0] + '"' + (self._filtri.min === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('') + '</select></div>' +
       '<div><label class="px-etiketa">' + esc(t('sPeriudha')) + '</label><select class="px-select" data-filtri="dite">' +
       [[7, t('sJava')], [30, t('sMuaji')]].map(function (o) { return '<option value="' + o[0] + '"' + (self._filtri.dite === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('') + '</select></div>' +
       '</div>' +
