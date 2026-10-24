@@ -141,9 +141,37 @@ dhe zakonisht fiton termi më i përdorur. Me Reddit + Indie Hackers bashkë, Re
   dhe butoni "Sign in for unlimited use". **Pas hyrjes, studimi fillon nga e para** për të.
 - **Mbrojtje nga abuzimi:** kufi domainesh për IP në ditë; domainet pa faqe të lexueshme nuk numërohen si provë.
 
-## 6. AI dhe dërgimi para hyrjes [PËR T'U NDËRTUAR]
+## 6. AI dhe dërgimi para hyrjes
 
-- **Studimi i biznesit për email-et:** si te 5.1. gpt-5-nano për përshkrimin dhe kategoritë; **gpt-5-mini** për subjektin dhe mesazhin.
+### 6.1 Gjenerimi i email-it me AI [NDËRTUAR]
+- Rruga: `POST /api/px/email-ai` te `prototip.js` (motori), e thirrur nga butoni "Study my business with AI".
+  Adresa ndryshohet me atributin `api="..."` të elementit (paracaktim `/api/px`).
+- Lexon faqen kryesore me lexuesin e sigurt të `komunitete.js`. Për këtë, `komunitete.js` ka një rresht të ri:
+  `app.locals.pxLexoFaqen` dhe `app.locals.pxPastroDomain`.
+- **gpt-5-mini**, në një thirrje, kthen: përshkrimin, llojin (b2b / b2c / te-dyja + siguria), 1–2 kategori nga lista, subjektin dhe mesazhin.
+- **B2C me siguri të lartë:** subjekti dhe mesazhi mbeten të kyçur, dhe del mesazhi që dërgimi është vetëm për B2B.
+- **Rregullat kundër spam-it,** në prompt dhe të kontrolluara në kod (`pxKontrolloEmailin`):
+  - subjekti 2–6 fjalë (maks. 8), pa "!", pa SHKRONJA TË MËDHA, pa emoji, pa çmime ose përqindje, pa "Re:" / "Fwd:";
+  - mesazhi 50–110 fjalë (pranohet 40–150), tekst i thjeshtë, 3–4 paragrafë, me `{company}`;
+  - pa lidhje dhe adresa interneti në email-in e parë, pa bashkëngjitje, pa imazhe;
+  - pa fjalët që filtrat lidhin me spam ("free", "guarantee", "urgent", "click here", "act now", "discount" etj.);
+  - një pyetje e qetë në fund, pa presion dhe pa lajka.
+  - Nëse drafti shkel rregullat, AI pyetet edhe një herë me listën e gabimeve.
+- Mbrojtje e përkohshme: maksimumi 10 thirrje në orë për IP.
+- **Kujdes:** përmbajtja e mirë ndihmon, por Gmail vendos kryesisht nga **teknika dhe reputacioni** i dërguesit:
+  SPF, DKIM dhe DMARC në domainin dërgues, çregjistrim me një klik (header `List-Unsubscribe` + `List-Unsubscribe-Post`),
+  ankesa për spam nën 0.1% (kufiri i Google për dërguesit masivë është 0.3%), volum i ulët dhe i rritur gradualisht,
+  email-e vetëm te adresa të verifikuara (pak kthime). Këto ndërtohen bashkë me dërgimin e vërtetë.
+
+### 6.2 Parapamja dhe shablloni [NDËRTUAR te prototipi]
+- Butoni **Preview** (aktiv pas studimit) hap dritaren që duket si kutia e email-it:
+  subjekti, From, Reply-to, To, mesazhi me emrin e biznesit në vend të `{company}` dhe `{domain}`, nënshkrimi,
+  dhe fundi: "Not relevant? Just reply "no"…" + Unsubscribe.
+- Pamje kompjuteri dhe telefoni; kalim mes 3 marrësve të zgjedhur; mbyllet me Esc.
+- I njëjti dizajn i lehtë përdoret për dërgimin e vërtetë [PËR T'U NDËRTUAR].
+
+### 6.3 Pjesa tjetër [PËR T'U NDËRTUAR]
+
 - **Dërgimi i 3 email-eve falas:** nga adresa e dërgimit të platformës, në një nëndomain të veçantë
   (p.sh. `mail.phronexusai.com`, që domaini kryesor të mos dëmtohet), me "reply-to" email-in e verifikuar të klientit.
 - **Bizneset në direktori:** nga lista e domaineve (Common Crawl + gjetja e email-eve). Tani janë shembuj.
@@ -174,7 +202,54 @@ Vlejnë për **çdo klient** (çdo llogari), me termat e tij që nuk ndryshohen 
 - **Bluesky live** kërkon që rregullat e çdo klienti të ndërtohen nga termat e tij dhe postimet të ndahen sipas klientit;
   te Njoftimet tani është për një përdorues të vetëm.
 
-## 8. Pyetje të hapura
+## 8. Ide dhe vendime të diskutuara pas prototipit (propozime, jo të ndërtuara)
+
+### 8.1 Stack Exchange: në pritje të testit
+- Testi i parë (4 kërkesa me terma, 7 ditë) dha **0 rezultate**. Termat tanë janë fraza të gjata për Google/Reddit,
+  ndërsa kërkimi i Stack Exchange kërkon pothuajse të gjitha fjalët; faqet si Software Recommendations marrin pak pyetje në javë.
+- Testi i dytë: "të gjitha pyetjet e reja" (pa terma) te Software Recommendations, 30 ditë, pastaj vlerësimi me AI.
+  - 0–1 me 40+: Stack Exchange hiqet nga plani, përveç produkteve teknike (Stack Overflow).
+  - disa me 40+: mbahet vetëm kjo mënyrë, një herë në ditë (jo çdo 6 orë si te seksioni 7).
+- Ide: AI zgjedh 2–4 faqet e Stack Exchange për çdo klient, nga lista reale (`/api/komunitete/vendet`), si te subreddit-et.
+
+### 8.2 Termat e përbashkët sipas kategorive
+- Termat që ndajnë disa klientë të së njëjtës kategori kërkohen **një herë** (Reddit, HN, Alerts), dhe rezultatet ndahen mes tyre.
+  Kjo kursen kredite Serper.
+- AI vlerëson çdo postim **veç për çdo klient**, sipas përshkrimit të tij. Kategoria vetëm zgjedh cilat rezultate i jepen.
+- Klienti i ri merr menjëherë rezultatet e kategorisë, plus 2–3 terma vetëm për të.
+
+### 8.3 Një listë e vetme kategorish [VENDIM I HAPUR]
+- Tani ka tri gjëra që nuk përputhen: Lancime (13 kategori të gjera, `LANCIME_KATEGORITE`), Komunitete (pa kategori)
+  dhe alertet (20 kategori më të ngushta, te `alerte-kategorite.csv`).
+- AI duhet të **zgjedhë nga lista** (1–2 kategori), jo të shpikë emra.
+- Dy rrugë: (a) 20 kategoritë bëhen lista e vetme; (b) dy nivele: 13 grupet e Lancime me 20 nënkategoritë brenda.
+
+### 8.4 Google Alerts si burim falas
+- Grumbullimi bëhet në **projektin e email-eve** (motori), jo në databazën e PhronexusAI.
+- Lista: `alerte-kategorite.csv`, me **111 alerte**, 3 fraza secili me OR (alertet e shkurtra kthejnë më shumë), 323 fraza, 20 kategori.
+  Mund të zgjerohet në 300–400 alerte me më shumë kategori dhe fraza.
+- Cilësimet: As-it-happens, English, Any region, All results, RSS feed.
+- **Rreziqet:**
+  - pa API: alertet krijohen me dorë;
+  - shumë llogari për të kaluar kufirin rreth 1,000 mund t'i bllokojë të gjitha njëherësh, edhe me email të ndryshëm;
+  - mbulim më i vogël se Serper; Reddit del rrallë pa `site:reddit.com`.
+- **Moduli i ri** `alerte-kategori.js` [PËR T'U NDËRTUAR], i veçantë nga tab-i Alerte:
+  tabela e feed-eve (adresa RSS, kategoria, termat, aktiv), kategoria për çdo rezultat,
+  dhe pastrim ditor: fshihen rezultatet më të vjetra se **7 ditë** për kategoritë pa asnjë klient.
+- **Kur:** testi tani (15–20 alerte me tab-in Alerte ekzistues); të gjitha alertet 1–2 javë para nisjes,
+  sepse pa klientë mbahen vetëm 7 ditët e fundit.
+- **Testi krahasues**, për 2–3 fraza gjatë së njëjtës javë:
+  - A: Sources = Discussions, pa `site:`;
+  - B: `(site:reddit.com OR site:indiehackers.com OR site:quora.com)`;
+  - C: vetëm `site:reddit.com`, krahasuar me Serper te Komunitete (7 ditë).
+- Ide: rezultatet e Alerts të kategorisë (7 ditët e fundit) mund t'i shfaqen edhe në provën falas para login, pa kosto Serper.
+
+### 8.5 Burime të tjera B2B për më vonë
+- Biseda: GitHub issues/discussions (falas, për produkte teknike), Dev.to, forumet Discourse (gjenden me Common Crawl, API falas).
+- Ngjarje: punësime (Greenhouse, Lever, Ashby, falas), investime (SEC EDGAR, formulari D), lançime (Show HN, Product Hunt, BetaList).
+- LinkedIn, G2, Quora: vetëm përmes Serper.
+
+## 9. Pyetje të hapura
 
 - B2B / B2C / të dyja + konfirmimi kur siguria është e ulët: miratohet?
 - Rrjedha e provës falas për **B2C**.
