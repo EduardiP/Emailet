@@ -170,7 +170,22 @@ dhe zakonisht fiton termi më i përdorur. Me Reddit + Indie Hackers bashkë, Re
 - Pamje kompjuteri dhe telefoni; kalim mes 3 marrësve të zgjedhur; mbyllet me Esc.
 - I njëjti dizajn i lehtë përdoret për dërgimin e vërtetë [PËR T'U NDËRTUAR].
 
-### 6.3 Pjesa tjetër [PËR T'U NDËRTUAR]
+### 6.3 Email-i përfundimtar: udhëzim për bisedën kryesore [PËR T'U NDËRTUAR në projektin real]
+- **Ndërtoje email-in njësoj si shablloni ekzistues "Biznes online - outreach" në admin panel** të PhronexusAI
+  (struktura, dizajni, opsioni Unsubscribe dhe pjesët e tjera të tij), me një ndryshim:
+  **teksti (subjekti dhe mesazhi) vjen nga AI** (6.1), sipas përshkrimit të biznesit, dhe klienti mund ta ndryshojë para dërgimit.
+- **Lidhjet vijnë nga shablloni, jo nga AI:**
+  - **një lidhje te faqja e dërguesit** në nënshkrim: e drejtpërdrejtë, pa ridrejtim gjurmimi dhe pa shkurtues (bit.ly etj.);
+  - **footer "Powered by PhronexusAI"** me logo të vogël: imazhi i vendosur në phronexusai.com, me tekst `alt`,
+    lidhje te phronexusai.com; email-i mbetet kryesisht tekst (pak imazh, shumë tekst).
+  - Mesazhi i AI-së mbetet pa lidhje (kontrolli në kod e ndalon), që numri i lidhjeve të jetë i vogël dhe i kontrolluar.
+- **Unsubscribe:** lidhje e dukshme në fund dhe header-at `List-Unsubscribe` + `List-Unsubscribe-Post: List-Unsubscribe=One-Click`
+  (kërkesë e Gmail/Yahoo); adresa që çregjistrohet hyn te lista e përbashkët "mos më kontakto" dhe nuk merr më email nga askush në platformë.
+- Rreshti "Not relevant? Just reply "no"…" mbetet sipër Unsubscribe.
+- Prova falas dërgohet nga `mail.phronexusai.com`, ndaj footer-i PhronexusAI përputhet me domainin dërgues.
+- Dërgo versionin HTML **dhe** versionin tekst të thjeshtë (multipart), pa bashkëngjitje.
+
+### 6.4 Pjesa tjetër [PËR T'U NDËRTUAR]
 
 - **Dërgimi i 3 email-eve falas:** nga adresa e dërgimit të platformës, në një nëndomain të veçantë
   (p.sh. `mail.phronexusai.com`, që domaini kryesor të mos dëmtohet), me "reply-to" email-in e verifikuar të klientit.
