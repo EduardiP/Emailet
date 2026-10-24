@@ -694,6 +694,8 @@ module.exports = function (app, pool) {
     }
     throw new Error('Shume ridrejtime.');
   }
+  // Te njejtat funksione te sigurta (pa SSRF) perdoren edhe nga seksioni "Faqja publike" (prototip.js).
+  app.locals.pxLexoFaqen = lexoFaqenKryesore; app.locals.pxPastroDomain = pastroDomain;
   app.post('/api/komunitete/analizo', async (req, res) => {
     try {
       if (!(await prit(res))) return;
