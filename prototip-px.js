@@ -831,7 +831,7 @@
       '<b>' + esc(t('ePergjigjuNe')) + ':</b> ' + esc(t('eReplyVlera')) + '<br>' +
       '<b>' + esc(t('ePer')) + ':</b> ' + esc(b.emri) + ' &lt;hello@' + esc(b.domaini) + '&gt;</div>' +
       '<div class="px-postieri-mesazhi">' + paragrafet + '</div>' +
-      '<div class="px-postieri-firma"><b>' + esc(marka) + '</b><br>' + esc(em.domaini || '') + '</div>' +
+      '<div class="px-postieri-firma"><b>' + esc(marka) + '</b><br><a href="#" data-p="asgje" style="color:#1a73e8">' + esc(em.domaini || '') + '</a></div>' +
       '<div class="px-postieri-fundi">' + esc(t('eFooterJo')) + ' · <a href="#" data-p="asgje">' + esc(t('eCregjistrohu')) + '</a></div>' +
       '</div></div></div>';
     r.appendChild(m);
