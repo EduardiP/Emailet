@@ -3863,6 +3863,7 @@ function esc(s){ return String(s||'').replace(/[&<>"']/g, function(c){ return ({
 </script>
 <script src="/komunitete-client.js"></script>
 <script src="/prototip-tab.js"></script>
+<script src="/studimi-client.js"></script>
 </body></html>`);
 });
 
