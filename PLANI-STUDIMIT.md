@@ -29,9 +29,15 @@ Motori mendon logjikisht, kërkon vetë në internet (si një studiues: kërkon,
 4. **Vlerësuar:** shoh opsionet, i miratoj ose i refuzoj, dhe zgjedh hapin tjetër:
    - **Rikërko:** AI krijon terma të rinj, duke përjashtuar çdo gjë që ka kërkuar më parë dhe opsionet e gjetura, pastaj kërkon përsëri.
    - **Ndaj në nëndegë:** AI përdor pengesat dhe pyetjet alternative për të propozuar degë të reja.
-   - **Mirato të gjitha nëndegët e propozuara** (p.sh. nis të dyja degët A dhe B njëherësh).
+   - **Shto një nëndegë me dorë:** titulli, pyetja dhe termat e mia; mbetet "propozuar" derisa ta miratoj.
 
 Pengesat trajtohen me pyetjet: *Pse ekziston pengesa? Çfarë dua realisht pas saj? Ku tjetër shfaqet e njëjta gjë? A është e hapur dhe falas? Si lidhet me sistemin (API, RSS, webhook)?*
+
+### Pamja dhe radha e studimit
+
+- Pema shfaqet **grafikisht**: rrënja (plani kryesor) sipër, degët poshtë saj, nëndegët poshtë tyre. Ngjyra tregon gjendjen: e verdhë = propozuar, blu = duke punuar, jeshile = e studiuar, e kuqe = gabim, gri = refuzuar.
+- Klikoj një degë për ta zgjedhur; detajet dhe butonat dalin poshtë pemës, dhe nga aty shtoj ose vazhdoj studimin.
+- **Studimi nuk shkon paralelisht:** në një projekt punon vetëm një degë në një kohë, ajo që zgjodha. Serveri refuzon të nisë një degë tjetër derisa të mbarojë e para.
 
 ## 4. Kushtet
 
