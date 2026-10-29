@@ -14,7 +14,7 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejec
 // Seksioni "Komunitete" (Hacker News + Stack Exchange): rruget dhe tabelat jane te komunitete.js, faqja te komunitete-client.js.
 require('./komunitete')(app, pool);
 require('./prototip')(app);
-
+require('./studimi')(app, pool);
 pool.query(`CREATE TABLE IF NOT EXISTS bizneset_gjetur (
   id SERIAL PRIMARY KEY,
   domain TEXT UNIQUE NOT NULL,
