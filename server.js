@@ -15,6 +15,7 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejec
 require('./komunitete')(app, pool);
 require('./prototip')(app);
 require('./studimi')(app, pool);
+
 pool.query(`CREATE TABLE IF NOT EXISTS bizneset_gjetur (
   id SERIAL PRIMARY KEY,
   domain TEXT UNIQUE NOT NULL,
