@@ -105,7 +105,7 @@ module.exports = function (app, pool) {
     await pool.query('CREATE INDEX IF NOT EXISTS studimi_opsionet_nyja_idx ON studimi_opsionet (nyja_id)');
     // Nyjet qe mbeten "duke punuar" nga nje nisje e meparshme e serverit nuk do te mbarojne kurre: shenohen si gabim.
     await pool.query(`UPDATE studimi_nyjet SET statusi = 'gabim', gabimi = 'Serveri u rinis gjate punes. Provo perseri.'
-      WHERE statusi IN ('duke kerkuar', 'duke ndare')`);
+      WHERE statusi IN ('duke kerkuar', 'duke ndare', 'ne radhe')`);
     return true;
   })().catch(e => { console.error('migrim studimi:', e.message); return false; });
 
@@ -271,16 +271,24 @@ module.exports = function (app, pool) {
     return r.rows;
   }
 
-  // ---------- puna ne sfond: nje nyje ne te njejten kohe ----------
-  const neProces = new Set();
-  function nisPunen(nid, puna) {
-    if (neProces.has(nid)) return false;
-    neProces.add(nid);
+  // ---------- puna ne sfond: nje dege ne nje kohe per projekt (studimi nuk shkon paralelisht) ----------
+  const neProces = new Set(), projektetNeProces = new Map();
+  const MESAZHI_ZENE = 'Nje dege tjeter e ketij projekti po studiohet. Studimi behet nje dege ne nje kohe: prit sa te mbaroje.';
+  function rezervo(nid, pid) {
+    if (neProces.has(nid) || projektetNeProces.has(pid)) return false;
+    neProces.add(nid); projektetNeProces.set(pid, nid);
+    return true;
+  }
+  function liro(nid, pid) {
+    neProces.delete(nid);
+    if (projektetNeProces.get(pid) === nid) projektetNeProces.delete(pid);
+  }
+  // Nis punen per nje nyje te rezervuar me rezervo(); e liron vete kur mbaron.
+  function nisPunen(nid, pid, puna) {
     puna().catch(async e => {
       console.error('studimi nyja ' + nid + ':', e.message);
       await pool.query(`UPDATE studimi_nyjet SET statusi = 'gabim', gabimi = $2, perditesuar = now() WHERE id = $1`, [nid, pastroGabimin(e)]).catch(() => {});
-    }).finally(() => neProces.delete(nid));
-    return true;
+    }).finally(() => liro(nid, pid));
   }
 
   // ---------- FAZA: ndarja (analiza logjike + nendeget) ----------
@@ -536,14 +544,15 @@ module.exports = function (app, pool) {
     if (n.niveli + 1 > THELLESIA_MAKS) return res.status(400).json({ error: 'U arrit thellesia maksimale e pemes (' + THELLESIA_MAKS + ').' });
     if (!['rrenje', 'vleresuar', 'ndare', 'gabim'].includes(n.statusi)) return res.status(400).json({ error: 'Kjo nyje duhet te kerkohet para se te ndahet.' });
     const udhezim = tekst((req.body || {}).udhezim, 1000), arsyeja = tekst((req.body || {}).arsyeja, 1000);
-    await ruajVendimin(n.projekti_id, n.id, 'ndarja', 'perdoruesi_kerkoi_ndarje', '', udhezim, arsyeja);
+    if (!rezervo(n.id, n.projekti_id)) return res.status(409).json({ error: MESAZHI_ZENE });
     const statusiPara = n.statusi;
-    await pool.query(`UPDATE studimi_nyjet SET statusi = 'duke ndare', gabimi = '', perditesuar = now() WHERE id = $1`, [n.id]);
-    const nisi = nisPunen(n.id, async () => {
+    try { await pool.query(`UPDATE studimi_nyjet SET statusi = 'duke ndare', gabimi = '', perditesuar = now() WHERE id = $1`, [n.id]); }
+    catch (e) { liro(n.id, n.projekti_id); throw e; }
+    await ruajVendimin(n.projekti_id, n.id, 'ndarja', 'perdoruesi_kerkoi_ndarje', '', udhezim, arsyeja);
+    nisPunen(n.id, n.projekti_id, async () => {
       try { await ndaj(n, udhezim); }
       catch (e) { await pool.query('UPDATE studimi_nyjet SET statusi = $2, gabimi = $3 WHERE id = $1', [n.id, statusiPara, pastroGabimin(e)]); }
     });
-    if (!nisi) return res.status(409).json({ error: 'Kjo nyje po punon tashme.' });
     res.json({ ok: true });
   }));
 
@@ -588,10 +597,11 @@ module.exports = function (app, pool) {
     if ((p.kredite || 0) >= KREDITE_PER_PROJEKT) {
       return res.status(400).json({ error: 'U arrit kufiri i kerkimeve te AI-se per kete projekt (' + KREDITE_PER_PROJEKT + ').' });
     }
+    if (!rezervo(n.id, n.projekti_id)) return res.status(409).json({ error: MESAZHI_ZENE });
+    try { await pool.query(`UPDATE studimi_nyjet SET statusi = 'duke kerkuar', gabimi = '', perditesuar = now() WHERE id = $1`, [n.id]); }
+    catch (e) { liro(n.id, n.projekti_id); throw e; }
     await ruajVendimin(n.projekti_id, n.id, 'kerkimi', veprimi, '', (n.termat || []).join(' | '), arsyeja);
-    await pool.query(`UPDATE studimi_nyjet SET statusi = 'duke kerkuar', gabimi = '', perditesuar = now() WHERE id = $1`, [n.id]);
-    const nisi = nisPunen(n.id, async () => kerkoDheVlereso(await merrNyjen(n.id)));
-    if (!nisi) return res.status(409).json({ error: 'Kjo nyje po punon tashme.' });
+    nisPunen(n.id, n.projekti_id, async () => kerkoDheVlereso(await merrNyjen(n.id)));
     res.json({ ok: true });
   }
   app.post('/api/studimi/nyja/:id/mirato', rrugaAPI(async (req, res) => {
@@ -600,29 +610,19 @@ module.exports = function (app, pool) {
     if (!['propozuar', 'gabim', 'refuzuar', 'vleresuar', 'ndare'].includes(n.statusi)) return res.status(400).json({ error: 'Kjo nyje nuk mund te kerkohet tani.' });
     await niseKerkimin(n, res, ['vleresuar', 'ndare'].includes(n.statusi) ? 'kerkoi_perseri' : 'miratoi_kerkimin', (req.body || {}).arsyeja);
   }));
-  // Mirato te gjitha nendeget e propozuara te nje nyjeje (p.sh. te dyja deget A dhe B).
-  app.post('/api/studimi/nyja/:id/mirato-nendeget', rrugaAPI(async (req, res) => {
+  // Shto nje nendege me dore nen nyjen e zgjedhur (statusi "propozuar": kerkohet vetem kur ta miratosh).
+  app.post('/api/studimi/nyja/:id/shto', rrugaAPI(async (req, res) => {
     const n = await merrNyjen(id(req.params.id));
     if (!n) return res.status(404).json({ error: 'Nyja nuk u gjet.' });
-    const femijet = (await pool.query(`SELECT * FROM studimi_nyjet WHERE prindi_id = $1 AND statusi = 'propozuar' ORDER BY id`, [n.id])).rows;
-    if (!femijet.length) return res.status(400).json({ error: 'Nuk ka nendege te propozuara.' });
-    const p = await merrProjektin(n.projekti_id);
-    if ((p.kredite || 0) >= KREDITE_PER_PROJEKT) return res.status(400).json({ error: 'U arrit kufiri i kerkimeve te AI-se per kete projekt (' + KREDITE_PER_PROJEKT + ').' });
-    for (const f of femijet) {
-      await ruajVendimin(f.projekti_id, f.id, 'ndarja', 'miratoi_nendegen', f.titulli, (f.termat || []).join(' | '), (req.body || {}).arsyeja);
-      await pool.query(`UPDATE studimi_nyjet SET statusi = 'ne radhe', perditesuar = now() WHERE id = $1`, [f.id]);
-    }
-    // Njera pas tjetres, qe kerkimet e AI-se te mos ngarkohen njekohesisht.
-    nisPunen(n.id * -1, async () => {
-      for (const f of femijet) {
-        await pool.query(`UPDATE studimi_nyjet SET statusi = 'duke kerkuar' WHERE id = $1`, [f.id]);
-        neProces.add(f.id);
-        try { await kerkoDheVlereso(await merrNyjen(f.id)); }
-        catch (e) { await pool.query(`UPDATE studimi_nyjet SET statusi = 'gabim', gabimi = $2 WHERE id = $1`, [f.id, pastroGabimin(e)]); }
-        finally { neProces.delete(f.id); }
-      }
-    });
-    res.json({ ok: true, nisur: femijet.length });
+    if (n.niveli + 1 > THELLESIA_MAKS) return res.status(400).json({ error: 'U arrit thellesia maksimale e pemes (' + THELLESIA_MAKS + ').' });
+    if (n.statusi === 'refuzuar') return res.status(400).json({ error: 'Kjo dege eshte refuzuar.' });
+    const b = req.body || {};
+    const titulli = tekst(b.titulli, 160), pyetja = tekst(b.pyetja, 600), termat = liste(b.termat, 150, MAKS_TERMA);
+    if (!titulli || !termat.length) return res.status(400).json({ error: 'Shkruaj titullin dhe te pakten nje term.' });
+    const r = await pool.query(`INSERT INTO studimi_nyjet (projekti_id, prindi_id, niveli, titulli, pyetja, arsyeja, termat)
+      VALUES ($1,$2,$3,$4,$5,'Shtuar me dore',$6) RETURNING id`, [n.projekti_id, n.id, n.niveli + 1, titulli, pyetja, termat]);
+    await ruajVendimin(n.projekti_id, r.rows[0].id, 'ndarja', 'shtoi_dege_me_dore', '', titulli + (pyetja ? ' | ' + pyetja : '') + ' [' + termat.join(', ') + ']', b.arsyeja);
+    res.json({ ok: true, id: r.rows[0].id });
   }));
   // Rikerko: terma te rinj nga AI (pa termat e perdorur dhe pa opsionet e gjetura), pastaj kerkim.
   app.post('/api/studimi/nyja/:id/rikerko', rrugaAPI(async (req, res) => {
@@ -630,14 +630,15 @@ module.exports = function (app, pool) {
     if (!n) return res.status(404).json({ error: 'Nyja nuk u gjet.' });
     if (!['vleresuar', 'ndare', 'gabim'].includes(n.statusi) || n.niveli === 0 || !(n.termat_perdorur || []).length) return res.status(400).json({ error: 'Rikerkimi behet pas nje kerkimi.' });
     const udhezim = tekst((req.body || {}).udhezim, 1000), arsyeja = tekst((req.body || {}).arsyeja, 1000);
-    await pool.query(`UPDATE studimi_nyjet SET statusi = 'duke kerkuar', gabimi = '', perditesuar = now() WHERE id = $1`, [n.id]);
-    const nisi = nisPunen(n.id, async () => {
+    if (!rezervo(n.id, n.projekti_id)) return res.status(409).json({ error: MESAZHI_ZENE });
+    try { await pool.query(`UPDATE studimi_nyjet SET statusi = 'duke kerkuar', gabimi = '', perditesuar = now() WHERE id = $1`, [n.id]); }
+    catch (e) { liro(n.id, n.projekti_id); throw e; }
+    nisPunen(n.id, n.projekti_id, async () => {
       const t = await termaTeRinj(n, udhezim);
       await pool.query('UPDATE studimi_nyjet SET termat = $2 WHERE id = $1', [n.id, t.termat]);
       await ruajVendimin(n.projekti_id, n.id, 'kerkimi', 'rikerkoi', (n.termat || []).join(' | '), t.termat.join(' | ') + (udhezim ? ' (udhezimi: ' + udhezim + ')' : ''), arsyeja);
       await kerkoDheVlereso(await merrNyjen(n.id));
     });
-    if (!nisi) return res.status(409).json({ error: 'Kjo nyje po punon tashme.' });
     res.json({ ok: true });
   }));
   app.post('/api/studimi/nyja/:id/refuzo', rrugaAPI(async (req, res) => {
