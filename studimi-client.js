@@ -11,12 +11,15 @@
 
   var st = document.createElement('style');
   st.textContent = [
-    '.stPema{flex:1 1 260px;min-width:240px;max-height:640px;overflow:auto;background:#10151f;border:1px solid #2a313c;border-radius:10px;padding:8px}',
-    '.stNyja{flex:2 1 460px;min-width:300px}',
-    '.stItem{padding:6px 8px;border-radius:6px;cursor:pointer;font-size:13px;line-height:1.4;border-left:2px solid #2a313c;margin:2px 0}',
-    '.stItem:hover{background:#141b26}',
-    '.stItem.zgjedhur{background:#1c2230;border-left-color:#3b6ef0}',
-    '.stItem .mut{color:#8b949e;font-size:11px}',
+    '.stPema{background:#10151f;border:1px solid #2a313c;border-radius:10px;padding:4px;overflow:auto;max-height:560px;margin-bottom:8px}',
+    '.stPema svg{display:block}',
+    '.stNd{cursor:pointer;outline:none}',
+    '.stNd:hover rect,.stNd:focus rect{stroke:#4a9eff}',
+    '@keyframes stPuls{50%{opacity:.45}}',
+    '@media (prefers-reduced-motion:no-preference){.stNd.punon rect{animation:stPuls 1.4s ease-in-out infinite}}',
+    '.stLegjenda{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:#8b949e;margin:0 0 6px}',
+    '.stLegjenda span::before{content:"";display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px;background:var(--n)}',
+    '.stNyja{margin-top:6px}',
     '.stSt{display:inline-block;font-size:11px;padding:1px 7px;border-radius:9px;background:#2a313c;color:#c9d1d9;margin-left:6px;white-space:nowrap}',
     '.stSt.punon{background:#1f4fb4;color:#fff}.stSt.mire{background:#1f6f43;color:#fff}.stSt.keq{background:#6e2b2b;color:#fff}.stSt.pret{background:#9a6700;color:#fff}',
     '.stKart{background:#141b26;border:1px solid #2a313c;border-radius:10px;padding:12px 14px;margin-bottom:12px}',
@@ -57,10 +60,11 @@
     '<div class="stBtns"><button id="stKrijoBtn">Krijo projektin</button><span id="stFormaStat" style="font-size:13px;color:#8b949e;align-self:center;"></span></div>',
     '</div>',
     '<div id="stInfo" style="font-size:12px;color:#8b949e;margin-bottom:10px;"></div>',
-    '<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;">',
+    '<div class="stLegjenda"><span style="--n:#d29922">propozuar (pret miratimin tend)</span><span style="--n:#3b6ef0">duke punuar</span>',
+    '<span style="--n:#3fb950">e studiuar</span><span style="--n:#f85149">gabim</span><span style="--n:#484f58">refuzuar</span></div>',
     '<div id="stPema" class="stPema"></div>',
+    '<div style="font-size:12px;color:#8b949e;margin-bottom:10px;">Kliko nje dege per ta zgjedhur. Studimi vazhdon vetem te dega qe zgjedh ti, nje dege ne nje kohe.</div>',
     '<div id="stNyja" class="stNyja"></div>',
-    '</div>',
     '<details class="njSeksion" id="stMesimi" style="margin-top:16px;"><summary>Mesimi: rregullat qe makineria nxjerr nga vendimet e tua</summary>',
     '<p class="mut" style="margin:8px 0;">Rregullat aktive futen ne promptin e fazes se tyre per te gjitha projektet. Asnje rregull nuk perdoret pa miratimin tend.</p>',
     '<div class="stBtns"><button id="stNxirrBtn" class="njBtnGri">Nxirr rregulla nga vendimet</button><button id="stKtheBtn" class="njBtnGri">Kthehu te versioni i meparshem</button>',
@@ -136,23 +140,67 @@
   }
 
   // ---------- pema ----------
+  // Pema grafike (SVG): rrenja siper, deget poshte. Pozicionet: gjethet marrin vende me radhe, prindi qendrohet mbi femijet.
+  var NS = 'http://www.w3.org/2000/svg', NW = 184, NH = 58, GX = 22, GY = 56, PAD = 14;
+  var NGJYRAT = { 'rrenje': ['#1c2230', '#8b949e'], 'propozuar': ['#2a2210', '#d29922'], 'ne radhe': ['#2a2210', '#d29922'],
+    'duke kerkuar': ['#10203f', '#3b6ef0'], 'duke ndare': ['#10203f', '#3b6ef0'], 'vleresuar': ['#0f2a1c', '#3fb950'],
+    'ndare': ['#0f2a1c', '#3fb950'], 'refuzuar': ['#161a20', '#484f58'], 'gabim': ['#2a1414', '#f85149'] };
+  function svgEl(tag, atr) {
+    var e = document.createElementNS(NS, tag);
+    Object.keys(atr || {}).forEach(function (k) { e.setAttribute(k, atr[k]); });
+    return e;
+  }
   function vizatoPemen() {
     var pema = $('stPema'); pema.innerHTML = '';
-    var sipasPrindit = {};
-    gjendja.nyjet.forEach(function (n) { var k = n.prindi_id || 0; (sipasPrindit[k] = sipasPrindit[k] || []).push(n); });
-    function shto(prindi) {
-      (sipasPrindit[prindi] || []).forEach(function (n) {
-        var it = el('div', 'margin-left:' + (n.niveli * 14) + 'px', null, 'stItem' + (n.id === gjendja.zgjedhur ? ' zgjedhur' : ''));
-        if (n.dega && n.niveli === 1) { it.appendChild(el('span', 'color:#4a9eff;font-weight:600;margin-right:4px', n.dega)); }
-        it.appendChild(document.createTextNode(n.titulli));
-        it.appendChild(etiketaStatusi(n.statusi));
-        if (n.opsione) { it.appendChild(el('div', '', n.opsione + ' opsione' + (n.miratuar ? ', ' + n.miratuar + ' te miratuara' : ''), 'mut')); }
-        it.onclick = function () { gjendja.zgjedhur = n.id; vizatoPemen(); ngarkoNyjen(n.id); };
-        pema.appendChild(it);
-        shto(n.id);
-      });
+    var femijet = {}, rrenja = null;
+    gjendja.nyjet.forEach(function (n) {
+      if (!n.prindi_id) { rrenja = rrenja || n; } else { (femijet[n.prindi_id] = femijet[n.prindi_id] || []).push(n); }
+    });
+    if (!rrenja) { return; }
+    var poz = {}, vendi = 0, nivMaks = 0;
+    (function vendos(n, niv) {
+      nivMaks = Math.max(nivMaks, niv);
+      var f = femijet[n.id] || [];
+      if (!f.length) { poz[n.id] = { x: vendi++, y: niv }; return; }
+      f.forEach(function (c) { vendos(c, niv + 1); });
+      poz[n.id] = { x: (poz[f[0].id].x + poz[f[f.length - 1].id].x) / 2, y: niv };
+    })(rrenja, 0);
+    var X = function (id) { return PAD + poz[id].x * (NW + GX); }, Y = function (id) { return PAD + poz[id].y * (NH + GY); };
+    var gjer = PAD * 2 + vendi * NW + (vendi - 1) * GX, lart = PAD * 2 + (nivMaks + 1) * NH + nivMaks * GY;
+    var svg = svgEl('svg', { width: gjer, height: lart, viewBox: '0 0 ' + gjer + ' ' + lart, role: 'img', 'aria-label': 'Pema e studimit' });
+    // Lidhjet (para kutive, qe te dalin poshte tyre)
+    gjendja.nyjet.forEach(function (n) {
+      if (!n.prindi_id || !poz[n.id] || !poz[n.prindi_id]) { return; }
+      var x1 = X(n.prindi_id) + NW / 2, y1 = Y(n.prindi_id) + NH, x2 = X(n.id) + NW / 2, y2 = Y(n.id), ym = (y1 + y2) / 2;
+      svg.appendChild(svgEl('path', { d: 'M' + x1 + ' ' + y1 + ' C' + x1 + ' ' + ym + ' ' + x2 + ' ' + ym + ' ' + x2 + ' ' + y2,
+        fill: 'none', stroke: n.statusi === 'refuzuar' ? '#30363d' : '#484f58', 'stroke-width': 1.5 }));
+    });
+    // Kutite
+    gjendja.nyjet.forEach(function (n) {
+      if (!poz[n.id]) { return; }
+      var ngj = NGJYRAT[n.statusi] || NGJYRAT.rrenje, zgjedhur = n.id === gjendja.zgjedhur;
+      var g = svgEl('g', { 'class': 'stNd' + (PUNON.indexOf(n.statusi) >= 0 ? ' punon' : ''), transform: 'translate(' + X(n.id) + ',' + Y(n.id) + ')',
+        tabindex: '0', role: 'button' });
+      if (n.statusi === 'refuzuar') { g.setAttribute('opacity', '0.6'); }
+      var titulli = (n.niveli === 1 && n.dega && n.dega !== 'tjeter' ? n.dega + ': ' : '') + n.titulli;
+      var t = svgEl('title'); t.textContent = titulli + ' (' + (EMRAT[n.statusi] || n.statusi) + ')'; g.appendChild(t);
+      g.appendChild(svgEl('rect', { width: NW, height: NH, rx: 8, fill: ngj[0], stroke: zgjedhur ? '#ffffff' : ngj[1], 'stroke-width': zgjedhur ? 2.5 : 1.2 }));
+      var t1 = svgEl('text', { x: NW / 2, y: 23, 'text-anchor': 'middle', fill: '#e6edf3', 'font-size': 13, 'font-weight': 600 });
+      t1.textContent = titulli.length > 24 ? titulli.slice(0, 23) + '…' : titulli; g.appendChild(t1);
+      var t2 = svgEl('text', { x: NW / 2, y: 42, 'text-anchor': 'middle', fill: ngj[1], 'font-size': 11 });
+      t2.textContent = (EMRAT[n.statusi] || n.statusi) + (n.opsione ? ' · ' + n.opsione + ' opsione' + (n.miratuar ? ' (' + n.miratuar + ' ✓)' : '') : '');
+      g.appendChild(t2);
+      var zgjidh = function () { gjendja.zgjedhur = n.id; vizatoPemen(); ngarkoNyjen(n.id); };
+      g.addEventListener('click', zgjidh);
+      g.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); zgjidh(); } });
+      svg.appendChild(g);
+    });
+    pema.appendChild(svg);
+    // Mbaje degen e zgjedhur te dukshme kur pema eshte me e gjere se ekrani.
+    if (gjendja.zgjedhur && poz[gjendja.zgjedhur]) {
+      var cx = X(gjendja.zgjedhur) + NW / 2;
+      if (cx < pema.scrollLeft || cx > pema.scrollLeft + pema.clientWidth) { pema.scrollLeft = Math.max(0, cx - pema.clientWidth / 2); }
     }
-    shto(0);
   }
 
   // ---------- nyja ----------
@@ -233,10 +281,12 @@
       var arsye = inA.value || pyetPse('Pse i ndryshove termat? (opsionale)');
       await api('POST', '/api/studimi/nyja/' + n.id + '/termat', { termat: taT.value.split('\n'), arsyeja: arsye });
     };
-    var propozuarFemije = (d.femijet || []).filter(function (f) { return f.statusi === 'propozuar'; }).length;
+    var deraPunon = gjendja.nyjet.filter(function (x) { return x.id !== n.id && PUNON.indexOf(x.statusi) >= 0; })[0];
     var rifresko = async function () { await ngarkoProjektin(gjendja.projekti.id, true); };
 
-    if (punon) {
+    if (!punon && deraPunon) {
+      btns.appendChild(el('span', 'font-size:13px;color:#d29922', 'Dega "' + deraPunon.titulli + '" po studiohet tani. Studimi behet nje dege ne nje kohe: prit sa te mbaroje.'));
+    } else if (punon) {
       btns.appendChild(el('span', 'font-size:13px;color:#4a9eff', n.statusi === 'duke ndare' ? 'AI po analizon dhe po ndan...' : 'AI po kerkon ne internet dhe po lexon faqet... (mund te zgjase disa minuta; rifreskohet vete)'));
     } else {
       if (n.niveli === 0 || ['vleresuar', 'ndare', 'gabim'].indexOf(n.statusi) >= 0) {
@@ -245,11 +295,6 @@
             await api('POST', '/api/studimi/nyja/' + n.id + '/ndaj', { udhezim: inU.value, arsyeja: inA.value }); await rifresko();
           }));
         }
-      }
-      if (propozuarFemije) {
-        btns.appendChild(buton('Mirato dhe kerko te ' + propozuarFemije + ' nendeget e propozuara', false, async function () {
-          await api('POST', '/api/studimi/nyja/' + n.id + '/mirato-nendeget', { arsyeja: inA.value }); await rifresko();
-        }));
       }
       if (n.niveli > 0 && ['propozuar', 'gabim', 'refuzuar'].indexOf(n.statusi) >= 0) {
         btns.appendChild(buton('Mirato dhe kerko', false, async function () {
@@ -281,6 +326,23 @@
           await api('POST', '/api/studimi/nyja/' + n.id + '/refuzo', { arsyeja: arsye }); await rifresko();
         }));
       }
+    }
+
+    // Shto nje dege me dore nen degen e zgjedhur
+    if (n.niveli < d.thellesiaMaks && n.statusi !== 'refuzuar') {
+      var ds = el('details', 'margin-top:8px');
+      ds.appendChild(el('summary', 'cursor:pointer;font-size:13px;color:#4a9eff', 'Shto nje nendege me dore ketu'));
+      var inTit = el('input'); inTit.type = 'text'; inTit.placeholder = 'Titulli i deges'; inTit.style.cssText = 'width:100%;box-sizing:border-box;margin-top:8px';
+      var inPy = el('input'); inPy.type = 'text'; inPy.placeholder = 'Pyetja qe do te studiohet'; inPy.style.cssText = 'width:100%;box-sizing:border-box;margin-top:6px';
+      var taTr = el('textarea'); taTr.rows = 3; taTr.placeholder = 'Termat e pikenisjes, nje per rresht'; taTr.style.marginTop = '6px';
+      ds.appendChild(inTit); ds.appendChild(inPy); ds.appendChild(taTr);
+      var bs = el('div', '', null, 'stBtns');
+      bs.appendChild(buton('Shto degen', true, async function () {
+        var r = await api('POST', '/api/studimi/nyja/' + n.id + '/shto', { titulli: inTit.value, pyetja: inPy.value, termat: taTr.value.split('\n'), arsyeja: inA.value });
+        gjendja.zgjedhur = r.id; await rifresko();
+      }));
+      ds.appendChild(bs);
+      k.appendChild(ds);
     }
 
     // Analiza, pengesat, pyetjet alternative
