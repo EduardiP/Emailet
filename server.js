@@ -1708,6 +1708,12 @@ const NJ_PERGJ_PRAGU = 40;
 // Kufiri i gjatesise: paracaktim 280 shenja (kufiri i X per llogari pa Premium; Bluesky lejon 300). Opsionale: NJOFTIME_PERGJIGJE_MAKS.
 const NJ_PERGJ_MAKS = njNumri(process.env.NJOFTIME_PERGJIGJE_MAKS, 280, 140);
 const NJ_PERGJ_DOMENI = 'phronexusai.com';
+// Lidhja ne pergjigje merret nga profili i faqes: adresa e pare phronexusai.com/... qe shkruhet aty (p.sh. phronexusai.com/email-outreach).
+// Nese profili s'ka faqe te vecante, perdoret vetem phronexusai.com.
+function njPergjLidhja() {
+  const m = String(njCfg.ai_profili || '').match(/phronexusai\.com(\/[a-z0-9\-_\/]*[a-z0-9\-_])?/i);
+  return m ? m[0].toLowerCase() : NJ_PERGJ_DOMENI;
+}
 // Faktet per pergjigjet vijne nga profili i faqes (njCfg.ai_profili); ky tekst perdoret vetem kur profili eshte bosh.
 const NJ_PERGJ_FAKTET = 'PhronexusAI (phronexusai.com) is a cross-promotion network for SaaS businesses: members show each other\'s ads on their own websites, ' +
   'so each business reaches other SaaS audiences and gets real conversions, not just exposure. B2B businesses are matched with B2B and B2C with B2C, ' +
@@ -1738,7 +1744,7 @@ function njPergjPrompt(postimi, lloji, arsye) {
     '- starts by answering their concern in a few natural words (no greeting, no compliment);\n' +
     '- says in one plain sentence how the product works and how it could cover their need;\n' +
     '- mentions what is free (a free plan, free trial or free emails) only if THE PRODUCT above says so, with exactly those words;\n' +
-    '- contains the domain ' + NJ_PERGJ_DOMENI + ' exactly once, written exactly like that (no http, no www, no @);\n' +
+    '- contains the link ' + njPergjLidhja() + ' exactly once, written exactly like that (no http, no www, no @), preferably at the end;\n' +
     '- is written in first person by the founder (for example "I built" or "I am building"), in the same language as the post;\n' +
     '- sounds like a real person writing a casual but professional message: no hype or sales words, no emojis, no hashtags, no exclamation marks, no lists, no quotation marks, no labels;\n' +
     '- is ONE paragraph of at most ' + Math.max(100, NJ_PERGJ_MAKS - 30) + ' characters.\n' +
@@ -1752,12 +1758,12 @@ function njPergjPastro(tekst) {
   return pa(pa(String(tekst || '').replace(/\s+/g, ' ').trim()).replace(/^(reply|response)\s*:\s*/i, ''));
 }
 // Gjatesia sipas X: nje domen i zbuluar si lidhje numerohet 23 shenja (ketu 8 me shume se 15 shenjat e phronexusai.com); per Bluesky kjo eshte thjesht pak me e kujdesshme.
-function njPergjGjatesia(t) { return t.length + 8 * (t.toLowerCase().split(NJ_PERGJ_DOMENI).length - 1); }
+function njPergjGjatesia(t) { const l = njPergjLidhja(); return t.length + (23 - l.length) * (t.toLowerCase().split(l).length - 1); }
 // Kthen null kur pergjigja eshte e pranueshme, ose arsyen (ne anglisht, per tentativen e dyte).
 function njPergjGabimi(t) {
   if (t.length < 40) return 'It was empty or far too short.';
   if (njPergjGjatesia(t) > NJ_PERGJ_MAKS) return 'It counts as ' + njPergjGjatesia(t) + ' characters but the hard limit is ' + NJ_PERGJ_MAKS + '. Make it clearly shorter.';
-  if (t.toLowerCase().indexOf(NJ_PERGJ_DOMENI) < 0) return 'It did not contain the domain ' + NJ_PERGJ_DOMENI + '.';
+  if (t.toLowerCase().indexOf(njPergjLidhja()) < 0) return 'It did not contain the link ' + njPergjLidhja() + ' written exactly like that.';
   if (/https?:|www\./i.test(t)) return 'It contained http or www; write the domain alone.';
   return null;
 }
