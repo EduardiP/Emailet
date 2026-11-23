@@ -148,11 +148,12 @@ module.exports = function (app, pool) {
     el('adsStat').textContent = 'Duke nisur...';
     fetch('/api/adsense/kontrollo', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ lancime: el('adsL').checked, kompani: el('adsK').checked, bizneset: el('adsB').checked, lista: el('adsLista').value }) })
-      .then(function (r) { return r.json(); }).then(function (j) {
+      .then(function (r) { return r.json().catch(function () { return { error: 'Serveri ktheu gabim ' + r.status + (r.status === 413 ? ' (lista shume e madhe)' : '') }; }); })
+      .then(function (j) {
         if (j.error) { el('adsStat').textContent = j.error; return; }
         el('adsStat').textContent = 'Per kontroll: ' + j.gjithsej + ' domaine';
         setTimeout(ndiq, 2000);
-      });
+      }).catch(function (e) { el('adsStat').textContent = 'Gabim: ' + e.message; });
   };
   el('adsKopjo').onclick = function () {
     var t = rreshtat.filter(function (x) { return x.direct; }).map(function (x) { return x.domaini; }).join('\\n');
