@@ -4,7 +4,7 @@
 const express = require('express');
 const { Pool } = require('pg');
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '5mb' })); // 5 MB: listat e gjata te domaineve (tab-i AdSense) kalojne 100 KB
 
 const EXA_KEY = process.env.EXA_API_KEY;
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
