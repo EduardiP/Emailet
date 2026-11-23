@@ -14,6 +14,7 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejec
 // Seksioni "Komunitete" (Hacker News + Stack Exchange): rruget dhe tabelat jane te komunitete.js, faqja te komunitete-client.js.
 require('./komunitete')(app, pool);
 require('./prototip')(app);
+require('./adsense')(app, pool);
 
 pool.query(`CREATE TABLE IF NOT EXISTS bizneset_gjetur (
   id SERIAL PRIMARY KEY,
@@ -3874,6 +3875,7 @@ function esc(s){ return String(s||'').replace(/[&<>"']/g, function(c){ return ({
 </script>
 <script src="/komunitete-client.js"></script>
 <script src="/prototip-tab.js"></script>
+<script src="/adsense-client.js"></script>
 </body></html>`);
 });
 
